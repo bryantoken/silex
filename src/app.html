@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Silex</title>
+    <script>
+      // Modo de cor antes do primeiro quadro (evita piscar escuro no modo claro)
+      try {
+        var s = localStorage.getItem("silex.scheme") || "dark";
+        document.documentElement.dataset.theme = s === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : s;
+      } catch (e) {}
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

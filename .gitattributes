@@ -1,0 +1,8 @@
+# Texto normalizado em LF no repositório (o checkout no Windows pode usar CRLF)
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.wasm binary
+*.woff2 binary

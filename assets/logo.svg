@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Silex: pedra de sílex lapidada. Gerado por scripts/make-icons.py a partir de src/lib/logo.ts -->
+  <rect width="1024" height="1024" rx="232" fill="#202020" />
+  <g fill="#ffffff" transform="translate(512 512) scale(0.82) translate(-512 -512)">
+    <polygon points="548,104 772,330 664,408 516,278" fill-opacity="0.9" />
+    <polygon points="772,330 808,612 668,610 664,408" fill-opacity="0.68" />
+    <polygon points="808,612 566,920 538,724 668,610" fill-opacity="0.46" />
+    <polygon points="566,920 252,726 384,616 538,724" fill-opacity="0.38" />
+    <polygon points="252,726 236,372 378,410 384,616" fill-opacity="0.6" />
+    <polygon points="236,372 548,104 516,278 378,410" fill-opacity="0.82" />
+    <polygon points="516,278 664,408 668,610 538,724 384,616 378,410" fill-opacity="1.0" />
+  </g>
+</svg>

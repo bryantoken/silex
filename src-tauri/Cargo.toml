@@ -1,0 +1,55 @@
+[package]
+name = "silex"
+version = "0.1.0"
+description = "Silex: editor de notas em Markdown, rápido e leve, feito em Rust"
+authors = ["Bryan Zucolotto Borges"]
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/bryantoken/silex"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "silex_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+# Diálogos de arquivo nativos, abertos na thread principal (ver src/dialogs.rs)
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+regex = "1"
+tantivy = "0.26"
+rhai = { version = "1.26", features = ["sync", "serde"] }
+serde_yaml = "0.9"
+calamine = "0.36"
+csv = "1.4"
+trash = "5.2"
+wasmi = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "http2", "charset", "system-proxy"] }
+keyring = "4"
+chrono = "0.4"
+docx-rs = "0.4"
+# Mesma versão que docx-rs/calamine já usam: lê o texto de .docx anexados ao chat
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+pulldown-cmark = "0.13"
+unicode-normalization = "0.1"
+futures = "0.3"
+tokio = { version = "1", features = ["time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,11 @@
+[package]
+name = "excel-table"
+version = "0.1.0"
+edition = "2021"
+description = "Converte tabelas copiadas do Excel (TSV) em tabelas Markdown"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+silex-plugin-sdk = { path = "../silex-plugin-sdk" }
