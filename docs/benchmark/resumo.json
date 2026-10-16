@@ -1,0 +1,124 @@
+{
+  "Obsidian": {
+    "privada_mb": {
+      "mediana": 612.1,
+      "min": 582.2,
+      "max": 632.4
+    },
+    "working_mb": {
+      "mediana": 649.4,
+      "min": 648.5,
+      "max": 668.9
+    },
+    "pico_privada_mb": {
+      "mediana": 733.1,
+      "min": 720.2,
+      "max": 751.1
+    },
+    "processos": {
+      "mediana": 4.0,
+      "min": 4.0,
+      "max": 4.0
+    },
+    "cpu_regime_pct": {
+      "mediana": 0.15666666666666865,
+      "min": 0.0533333333333393,
+      "max": 2.3433333333333315
+    },
+    "cpu_abertura_s": {
+      "mediana": 10.516,
+      "min": 8.125,
+      "max": 26.328
+    },
+    "rodadas": [
+      {
+        "rodada": 1,
+        "privada_mb": 632.4,
+        "working_mb": 668.9,
+        "pico_privada_mb": 751.1,
+        "processos": 4.0,
+        "cpu_regime_pct": 0.0533333333333393,
+        "cpu_abertura_s": 26.328
+      },
+      {
+        "rodada": 2,
+        "privada_mb": 582.2,
+        "working_mb": 648.5,
+        "pico_privada_mb": 733.1,
+        "processos": 4.0,
+        "cpu_regime_pct": 0.15666666666666865,
+        "cpu_abertura_s": 8.125
+      },
+      {
+        "rodada": 3,
+        "privada_mb": 612.1,
+        "working_mb": 649.4,
+        "pico_privada_mb": 720.2,
+        "processos": 4.0,
+        "cpu_regime_pct": 2.3433333333333315,
+        "cpu_abertura_s": 10.516
+      }
+    ]
+  },
+  "Silex": {
+    "privada_mb": {
+      "mediana": 243.7,
+      "min": 243.3,
+      "max": 244.0
+    },
+    "working_mb": {
+      "mediana": 438.5,
+      "min": 437.55,
+      "max": 441.3
+    },
+    "pico_privada_mb": {
+      "mediana": 252.6,
+      "min": 251.3,
+      "max": 252.8
+    },
+    "processos": {
+      "mediana": 7.0,
+      "min": 7.0,
+      "max": 7.0
+    },
+    "cpu_regime_pct": {
+      "mediana": 0.20666666666666464,
+      "min": 0.2066666666666587,
+      "max": 0.30999999999998806
+    },
+    "cpu_abertura_s": {
+      "mediana": 20.969,
+      "min": 5.719,
+      "max": 36.188
+    },
+    "rodadas": [
+      {
+        "rodada": 1,
+        "privada_mb": 243.7,
+        "working_mb": 437.55,
+        "pico_privada_mb": 252.6,
+        "processos": 7.0,
+        "cpu_regime_pct": 0.2066666666666587,
+        "cpu_abertura_s": 20.969
+      },
+      {
+        "rodada": 2,
+        "privada_mb": 243.3,
+        "working_mb": 438.5,
+        "pico_privada_mb": 251.3,
+        "processos": 7.0,
+        "cpu_regime_pct": 0.20666666666666464,
+        "cpu_abertura_s": 5.719
+      },
+      {
+        "rodada": 3,
+        "privada_mb": 244.0,
+        "working_mb": 441.3,
+        "pico_privada_mb": 252.8,
+        "processos": 7.0,
+        "cpu_regime_pct": 0.30999999999998806,
+        "cpu_abertura_s": 36.188
+      }
+    ]
+  }
+}

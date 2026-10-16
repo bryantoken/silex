@@ -15,6 +15,10 @@ O Silex trabalha direto numa pasta de arquivos `.md` (o "cofre"): suas notas con
 
 Tudo que é pesado (índice, busca, renderização de blocos, exportação, IA) roda em **Rust**. A interface é uma camada fina sobre o WebView do sistema, sem Electron, o que mantém o consumo de memória baixo.
 
+## Desempenho
+
+Abrindo o mesmo cofre (909 notas) na mesma máquina, com o app parado: **244 MB de memória privada no Silex contra 612 MB num editor de notas em Electron**, 60% a menos (mediana de 3 rodadas, somando todos os processos de cada app). Metodologia, premissas, limitações e dados brutos em [docs/benchmark](docs/benchmark/README.md).
+
 ## Recursos
 
 **Editor**
