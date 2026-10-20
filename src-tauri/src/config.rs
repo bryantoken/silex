@@ -39,6 +39,8 @@ pub struct VaultConfig {
     pub core_plugins: Option<Vec<String>>,
     /// Configurações de cada plugin nativo (id → JSON)
     pub plugin_settings: serde_json::Map<String, serde_json::Value>,
+    /// Atalhos alterados pelo usuário (id do comando → combinação; "" = sem atalho)
+    pub hotkeys: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for VaultConfig {
@@ -54,6 +56,7 @@ impl Default for VaultConfig {
             readable_line_width: true,
             core_plugins: None,
             plugin_settings: serde_json::Map::new(),
+            hotkeys: serde_json::Map::new(),
         }
     }
 }

@@ -173,6 +173,11 @@ select {
 .mesa-form.is-wide {
   width: min(760px, 94vw);
 }
+/* Coluna flex com rolagem: sem isso os blocos (descrição, textarea) encolhem
+   até o min-height e o conteúdo vaza por cima dos botões */
+.mesa-form > * {
+  flex-shrink: 0;
+}
 .sx-prompt-title,
 .mesa-form-title {
   display: flex;
@@ -216,12 +221,73 @@ select {
   line-height: 1.6;
   min-height: 80px;
 }
-.mesa-md :first-child {
+.mesa-md > :first-child {
   margin-top: 0;
+}
+.mesa-md > :last-child {
+  margin-bottom: 0;
+}
+.mesa-md img {
+  max-width: 100%;
+}
+.mesa-md pre,
+.mesa-md table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+/* Visualizar e Editar ocupam o mesmo bloco: alternar não muda a altura */
+.mesa-md-view,
+.mesa-md-editor {
+  min-height: 300px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.mesa-md-view {
+  cursor: text;
+  overflow-wrap: anywhere;
+  transition: border-color 120ms var(--sx-ease), background 120ms var(--sx-ease);
+}
+.mesa-md-view:hover {
+  border-color: var(--sx-border-strong);
+  background: var(--sx-surface-raised);
 }
 .mesa-md-editor {
   font-family: var(--sx-font-mono);
   font-size: 13px;
+  resize: none;
+}
+.mesa-recur {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mesa-recur-n {
+  width: 72px;
+}
+.mesa-recur-date {
+  width: 160px;
+}
+.mesa-weekdays {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.mesa-weekdays button {
+  min-width: 40px;
+  padding: 4px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--sx-border);
+  color: var(--sx-text-muted);
+  font-size: var(--sx-text-xs);
+}
+.mesa-weekdays button:hover {
+  background: var(--sx-surface-hover);
+}
+.mesa-weekdays button.is-on {
+  background: var(--sx-accent-soft-strong);
+  border-color: var(--sx-border-strong);
+  color: var(--sx-text-strong);
 }
 
 /* ---------- Jev Home ---------- */
@@ -804,8 +870,221 @@ select {
   padding: 10px 14px;
   border-radius: var(--sx-radius-md);
   border: 1px solid var(--sx-border);
-  border-left: 3px solid var(--mesa-c, var(--sx-border-strong));
   background: var(--sx-surface);
+  scroll-margin: 80px;
+}
+.mesa-card.is-focus {
+  border-color: var(--sx-accent);
+  box-shadow: 0 0 0 3px var(--sx-accent-soft-strong);
+  animation: mesa-flash 1.6s var(--sx-ease);
+}
+@keyframes mesa-flash {
+  0%, 40% { background: var(--sx-accent-soft-strong); }
+  100% { background: var(--sx-surface); }
+}
+
+/* Tarefas: lista densa, uma linha por tarefa, ações em ícones à direita */
+.mesa {
+  container-type: inline-size;
+}
+.mesa h3 .sx-icon {
+  vertical-align: -1px;
+  color: var(--sx-text-faint);
+}
+.mesa-list {
+  border-top: 1px solid var(--sx-border);
+}
+.mesa-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 5px 6px 5px 8px;
+  border-bottom: 1px solid var(--sx-border);
+  font-size: var(--sx-text-sm);
+  transition: background 120ms var(--sx-ease);
+}
+.mesa-row:hover,
+.mesa-row:focus-within {
+  background: var(--sx-surface-hover);
+}
+.mesa-row.is-pinned {
+  background: var(--sx-surface);
+}
+.mesa-row.is-pinned:hover {
+  background: var(--sx-surface-raised);
+}
+.mesa-row.is-closed .mesa-task-title {
+  color: var(--sx-text-faint);
+  text-decoration: line-through;
+}
+.mesa-row.is-flash {
+  animation: mesa-flash-row 2.2s var(--sx-ease);
+}
+@keyframes mesa-flash-row {
+  0%, 35% { background: var(--sx-accent-soft-strong); }
+  100% { background: transparent; }
+}
+.mesa-row.is-dragging {
+  opacity: 0.4;
+}
+.mesa-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--sx-accent);
+}
+.mesa-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--sx-accent);
+}
+.mesa-grip {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  margin-right: -4px;
+  color: var(--sx-text-faint);
+  cursor: grab;
+  opacity: 0.5;
+}
+.mesa-row:hover .mesa-grip {
+  opacity: 1;
+}
+.mesa-check {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.mesa-check input {
+  position: absolute;
+  opacity: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+}
+.mesa-check span {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--sx-border-strong);
+  color: transparent;
+  transition: border-color 120ms var(--sx-ease), background 120ms var(--sx-ease), color 120ms var(--sx-ease);
+}
+.mesa-check:hover span {
+  border-color: var(--sx-success);
+  color: color-mix(in srgb, var(--sx-success) 70%, transparent);
+}
+.mesa-check input:checked + span {
+  border-color: var(--sx-success);
+  background: var(--sx-success);
+  color: var(--sx-on-accent);
+}
+.mesa-check input:focus-visible + span {
+  box-shadow: 0 0 0 3px var(--sx-accent-soft-strong);
+}
+.mesa-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.mesa-row .mesa-task-title {
+  display: block;
+  width: 100%;
+  font-weight: 550;
+}
+.mesa-row-pin {
+  display: inline-grid;
+  margin-right: 5px;
+  color: hsl(42 90% 60%);
+  vertical-align: -1px;
+}
+.mesa-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--sx-text-xs);
+  color: var(--sx-text-faint);
+}
+.mesa-row-proj,
+.mesa-row-date,
+.mesa-row-status,
+.mesa-row-prio {
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--sx-text-xs);
+  color: var(--sx-text-muted);
+}
+.mesa-row-proj {
+  width: 130px;
+}
+.mesa-row-proj.is-empty {
+  color: var(--sx-text-faint);
+}
+.mesa-row-date {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 78px;
+  font-variant-numeric: tabular-nums;
+}
+.mesa-row-recur {
+  display: inline-grid;
+  color: var(--sx-text-faint);
+}
+.mesa-row-status,
+.mesa-row-prio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 84px;
+}
+.mesa-row-prio {
+  width: 92px;
+}
+.mesa-row-status .mesa-dot,
+.mesa-row-prio .mesa-dot {
+  width: 7px;
+  height: 7px;
+}
+.mesa-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1px;
+  flex-shrink: 0;
+  width: 140px;
+  opacity: 0.6;
+  transition: opacity 120ms var(--sx-ease);
+}
+.mesa-row:hover .mesa-row-actions,
+.mesa-row:focus-within .mesa-row-actions {
+  opacity: 1;
+}
+.mesa-row-actions .icon-btn.is-on {
+  color: var(--sx-text-strong);
+}
+.mesa-row-actions .icon-btn:disabled {
+  opacity: 0.5;
+}
+.mesa-enrich.is-ready {
+  color: hsl(42 90% 60%);
+}
+.mesa-enrich.is-busy {
+  animation: sx-pulse 0.9s var(--sx-ease) infinite alternate;
+}
+@container (max-width: 760px) {
+  .mesa-row-prio,
+  .mesa-row-proj {
+    display: none;
+  }
+}
+@container (max-width: 520px) {
+  .mesa-row-status {
+    width: auto;
+    font-size: 0;
+  }
 }
 .mesa-card h4 {
   margin: 0 0 4px;
@@ -845,10 +1124,6 @@ select {
   align-items: center;
   gap: 6px;
   margin-top: 8px;
-}
-.mesa-enrich.is-ready {
-  color: var(--sx-accent-text);
-  border-color: var(--sx-accent);
 }
 .mesa-archive {
   margin-left: auto;

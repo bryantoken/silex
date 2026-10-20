@@ -91,6 +91,49 @@ export function statusOf(n: { data: Data }, date = today()): [string, string] {
   return [key, STATUS[key]];
 }
 
+// ---------- Recorrência ----------
+// recur: { unit: "day" | "week" | "month", every: N, days?: [0..6] (dias da semana, 0 = domingo) }
+
+export type Recur = { unit: "day" | "week" | "month"; every: number; days?: number[] };
+export const WEEKDAYS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+
+export function validRecur(r: any): Recur | null {
+  if (!r || typeof r !== "object" || !["day", "week", "month"].includes(r.unit)) return null;
+  const every = Math.max(1, Math.min(365, Math.floor(Number(r.every) || 1)));
+  const days = Array.isArray(r.days) ? [...new Set(r.days.map(Number).filter((d: number) => d >= 0 && d <= 6))].sort() : [];
+  return { unit: r.unit, every, ...(r.unit === "week" && days.length ? { days: days as number[] } : {}) };
+}
+
+export function recurLabel(raw: any) {
+  const r = validRecur(raw);
+  if (!r) return "";
+  const days = r.days?.length ? ` (${r.days.map((d) => WEEKDAYS[d]).join(", ")})` : "";
+  if (r.every === 1) return ({ day: "Diária", week: "Semanal", month: "Mensal" } as const)[r.unit] + days;
+  return `A cada ${r.every} ${({ day: "dias", week: "semanas", month: "meses" } as const)[r.unit]}${days}`;
+}
+
+/** Próxima data da série depois de `from` (AAAA-MM-DD). */
+export function nextOccurrence(raw: any, from: string): string | null {
+  const r = validRecur(raw);
+  if (!r) return null;
+  if (r.unit === "day") return addDays(from, r.every);
+  if (r.unit === "month") {
+    const d = parseYmd(from);
+    const day = d.getDate();
+    const target = new Date(d.getFullYear(), d.getMonth() + r.every, 1);
+    target.setDate(Math.min(day, new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()));
+    return ymd(target);
+  }
+  if (!r.days?.length) return addDays(from, 7 * r.every);
+  // Semanas contadas a partir de segunda-feira; "a cada N semanas" pula as semanas intermediárias
+  const week = (s: string) => Math.floor((diffDays("1970-01-05", s)) / 7);
+  for (let i = 1; i <= 7 * r.every + 7; i++) {
+    const d = addDays(from, i);
+    if (r.days.includes(parseYmd(d).getDay()) && (week(d) - week(from)) % r.every === 0) return d;
+  }
+  return null;
+}
+
 export const prioLabel = (s: number) => (s >= 2.5 ? "urgente" : s >= 1.5 ? "importante" : s >= 0.5 ? "normal" : "pode esperar");
 export const prioLevel = (s: number) => (s >= 2.5 ? 3 : s >= 1.5 ? 2 : s >= 0.5 ? 1 : 0);
 
@@ -234,15 +277,90 @@ export class MesaCore {
   }
 
   // Captura
-  async capture(text: string, project: string | null, source: string | null = null) {
+  async capture(text: string, project: string | null, source: string | null = null, recur: Recur | null = null, first = "") {
     const t = text.trim();
     if (!t) throw Error("Escreva algo para capturar.");
-    await this.create(
+    if (recur && !validDate(first)) throw Error("Informe a primeira data da repetição.");
+    return this.create(
       "task",
       t.split("\n")[0].slice(0, 200),
-      { project: project || null, state: "pending", deadline: "pending", due: null, start: null, next: "", blocked: "", defer: null, source },
+      {
+        project: project || null,
+        state: "pending",
+        deadline: recur ? "date" : "pending",
+        due: recur ? first : null,
+        start: null,
+        next: "",
+        blocked: "",
+        defer: null,
+        source,
+        ...(recur ? { recur } : {}),
+      },
       `## Captura original\n\n${t}\n\n## Anotações\n\n`,
     );
+  }
+
+  /** Conclui/reabre. Concluir uma tarefa recorrente cria a próxima ocorrência da série. */
+  async setState(n: Rec, state: string) {
+    const updated = await this.update(n, { state });
+    if (state === "done" && n.data.state !== "done") await this.spawnNext(updated);
+    return updated;
+  }
+  async spawnNext(n: Rec) {
+    const recur = validRecur(n.data.recur);
+    if (!recur) return;
+    const t0 = today();
+    const range = taskRange(n);
+    let next = nextOccurrence(recur, range?.end || t0);
+    // Concluída com atraso: pula direto para a próxima data futura
+    while (next && next <= t0) next = nextOccurrence(recur, next);
+    if (!next) return;
+    // Reabrir e concluir de novo não duplica a ocorrência
+    const series = n.data.series || n.data.id;
+    if ((await this.allOf("task")).some((x) => (x.data.series || x.data.id) === series && x.data.id !== n.data.id && x.data.due === next)) return;
+    const span = range && n.data.start && !range.month ? diffDays(range.start, range.end) : null;
+    const d = n.data;
+    const created = await this.create(
+      "task",
+      d.title,
+      {
+        project: d.project || null,
+        state: "pending",
+        deadline: "date",
+        due: next,
+        start: span !== null ? addDays(next, -span) : null,
+        next: d.next || "",
+        blocked: "",
+        defer: null,
+        source: d.source || null,
+        recur,
+        series,
+        pinned: d.pinned || false,
+      },
+      n.body,
+    );
+    // A nova ocorrência herda a posição da anterior nas listas ordenadas
+    const order = this.cache("mesa-order") || {};
+    for (const k of Object.keys(order)) order[k] = order[k].map((id: string) => (id === d.id ? created.data.id : id));
+    this.cache("mesa-order", order);
+    this.notice(`Próxima ocorrência em ${fmtDate(next)}.`);
+  }
+
+  togglePin(n: Rec) {
+    return this.update(n, { pinned: !n.data.pinned });
+  }
+
+  /** Ordem manual (arrastar e soltar) de uma lista da Mesa; guardada neste dispositivo. */
+  ordered(list: Rec[], key: string) {
+    const ids: string[] = this.cache("mesa-order")?.[key] || [];
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    return list
+      .map((n, i) => [n, pos.get(n.data.id) ?? ids.length + i] as const)
+      .sort((a, b) => a[1] - b[1])
+      .map(([n]) => n);
+  }
+  reorder(key: string, ids: string[]) {
+    this.cache("mesa-order", { ...(this.cache("mesa-order") || {}), [key]: ids });
   }
 
   // Carga do dia: planejadas + em andamento (início <= hoje) + atrasadas

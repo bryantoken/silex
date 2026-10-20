@@ -13,7 +13,7 @@
   import { hostFacet, revealExtensions, type EditorHost } from "./context";
   import { inlinePreview } from "./inline";
   import { blockPreview } from "./blocks";
-  import { moveLines, selectCodeBlock, setTaskStatus } from "./commands";
+  import { selectCodeBlock, setTaskStatus } from "./commands";
   import { silexHighlight, silexEditorTheme } from "./theme";
   import { frontmatterRange } from "./widgets";
 
@@ -103,11 +103,9 @@
     revealExtensions,
     autocompletion({ override: [wikiCompletions], icons: false, maxRenderedOptions: 50 }),
     keymap.of([
+      // Ctrl+L (alternar tarefa) e Ctrl+Shift+↑/↓ (mover linhas) são comandos do app,
+      // com atalho configurável; Ctrl+Enter fica como alternativa fixa
       { key: "Mod-Enter", run: (v) => (setTaskStatus(v, null), true) },
-      // Ctrl+L cria a tarefa (ou alterna [ ] ↔ [x]), como no Obsidian
-      { key: "Mod-l", run: (v) => (setTaskStatus(v, null), true) },
-      { key: "Mod-Shift-ArrowUp", run: (v) => moveLines(v, -1, !!bridge?.livePreview) },
-      { key: "Mod-Shift-ArrowDown", run: (v) => moveLines(v, 1, !!bridge?.livePreview) },
       { key: "Mod-a", run: selectCodeBlock },
       {
         key: "ArrowUp",

@@ -7,7 +7,6 @@ mod mesa;
 mod native;
 mod net;
 mod numerals;
-mod obsidian;
 mod organizer;
 mod pages;
 mod plugins;
@@ -723,38 +722,13 @@ fn read_css(kind: String, name: String, state: State<VaultState>) -> Res<String>
     fs::read_to_string(path).map_err(err)
 }
 
-#[tauri::command]
-fn import_obsidian(state: State<VaultState>) -> Res<obsidian::ImportReport> {
-    let root = vault_root(&state)?;
-    let report = obsidian::import(&root)?;
-    let mut cfg = config::load_vault(&root);
-    for (id, value) in &report.settings {
-        if let Some(sugg) = id.strip_suffix(":suggestions").filter(|i| *i == "jev-organizer") {
-            let _ = sugg;
-            if organizer::load(&root).is_empty() {
-                if let Ok(s) = serde_json::from_value::<organizer::Suggestions>(value.clone()) {
-                    organizer::save(&root, &s)?;
-                }
-            }
-            continue;
-        }
-        cfg.plugin_settings.insert(id.clone(), value.clone());
-    }
-    let mut enabled = native::enabled_core(&cfg);
-    for id in &report.enable {
-        if !enabled.contains(id) {
-            enabled.push(id.clone());
-        }
-    }
-    cfg.core_plugins = Some(enabled);
-    config::save_vault(&root, &cfg)?;
-    Ok(report)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // Atualização automática pelas Releases do GitHub (só no desktop)
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).plugin(tauri_plugin_process::init());
+    builder
         .manage(VaultState {
             root: Mutex::new(None),
             search: SearchIndex::new().expect("Falha ao criar o índice de busca"),
@@ -803,7 +777,6 @@ pub fn run() {
             save_vault_config,
             list_appearance,
             read_css,
-            import_obsidian,
             native::secret_len,
             native::set_secret,
             native::jev_test,

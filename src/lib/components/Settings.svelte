@@ -10,6 +10,8 @@
     readable_line_width: boolean;
     core_plugins: string[] | null;
     plugin_settings: Record<string, unknown>;
+    /** Atalhos alterados (id do comando → combinação; "" = sem atalho) */
+    hotkeys?: Record<string, string>;
   };
   export type PluginInfo = {
     id: string;
@@ -24,17 +26,13 @@
     error: string | null;
   };
   export type Appearance = { themes: string[]; snippets: string[]; dir: string };
-  export type ImportReport = {
-    themes: string[];
-    snippets: string[];
-    active_theme: string | null;
-    enabled_snippets: string[];
-    plugins: { id: string; name: string; enabled_in_obsidian: boolean; status: string; note: string }[];
-  };
+  /** Comando que aceita atalho: id, nome e atalho padrão (formato "Ctrl+Shift+F") */
+  export type HotkeyCommand = { id: string; title: string; hotkey?: string };
 </script>
 
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { comboOf, showCombo, validCombo } from "../hotkeys";
   import Logo from "./Logo.svelte";
   import PluginSettings from "../plugins/PluginSettings.svelte";
   import { CORE_PLUGINS, enabledCore, pluginSettings } from "../plugins/registry";
@@ -48,7 +46,9 @@
     oninstall: () => void;
     onopenplugins: () => void;
     onopenthemes: () => void;
-    onimport: () => Promise<ImportReport | null>;
+    /** Todos os comandos da paleta (para editar atalhos) */
+    commands: HotkeyCommand[];
+    version: string;
     onvaults: () => void;
     onclose: () => void;
     /** Ações dos botões nas configurações dos plugins (testar chave, reindexar...) */
@@ -65,7 +65,8 @@
     oninstall,
     onopenplugins,
     onopenthemes,
-    onimport,
+    commands,
+    version,
     onvaults,
     onclose,
     onaction,
@@ -92,63 +93,85 @@
     onconfig({ ...config, plugin_settings: { ...config.plugin_settings, [id]: v } });
   }
 
-  type Section = "appearance" | "editor" | "plugins" | "import" | "hotkeys" | "about";
+  type Section = "appearance" | "editor" | "plugins" | "hotkeys" | "about";
   let section = $state<Section>("appearance");
-  let report = $state<ImportReport | null>(null);
-  let importing = $state(false);
 
   const SECTIONS: { id: Section; label: string; icon: string }[] = [
     { id: "appearance", label: "Aparência", icon: "palette" },
     { id: "editor", label: "Editor", icon: "edit" },
     { id: "plugins", label: "Plugins", icon: "zap" },
-    { id: "import", label: "Importar do Obsidian", icon: "repeat" },
     { id: "hotkeys", label: "Atalhos", icon: "command" },
     { id: "about", label: "Sobre", icon: "info" },
   ];
 
   const HUES = [256, 212, 172, 146, 28, 340];
 
-  const STATUS: Record<string, { label: string; cls: string }> = {
-    native: { label: "Nativo em Rust", cls: "ok" },
-    plugin: { label: "Plugin WASM", cls: "ok" },
-    replaced: { label: "Substituído", cls: "info" },
-    unneeded: { label: "Desnecessário", cls: "muted" },
-    pending: { label: "Não portado", cls: "warn" },
-  };
-
-  const HOTKEYS: [string, string][] = [
-    ["Paleta de comandos", "Ctrl P"],
-    ["Abrir arquivo rapidamente", "Ctrl O"],
-    ["Buscar no cofre", "Ctrl Shift F"],
-    ["Nova nota", "Ctrl N"],
-    ["Visualização em grafo", "Ctrl G"],
-    ["Configurações", "Ctrl ,"],
-    ["Alternar tarefa", "Ctrl Enter"],
-    ["Renomear nota", "F2"],
-    ["Nova aba / fechar aba", "Ctrl T / Ctrl W"],
-    ["Próxima / anterior aba", "Ctrl Tab / Ctrl Shift Tab"],
-    ["Voltar / avançar", "Alt ← / Alt →"],
-    ["Alternar barra lateral", "Ctrl B"],
-    ["Buscar na nota", "Ctrl F"],
-    ["Salvar agora", "Ctrl S"],
-  ];
-
   function set<K extends keyof VaultConfig>(key: K, value: VaultConfig[K]) {
     onconfig({ ...config, [key]: value });
+  }
+
+  // ----- Atalhos -----
+  /** Teclas tratadas dentro do editor (fixas) */
+  const EDITOR_KEYS: [string, string][] = [
+    ["Alternar tarefa (alternativo)", "Ctrl Enter"],
+    ["Buscar / substituir na nota", "Ctrl F / Ctrl H"],
+    ["Desfazer / refazer", "Ctrl Z / Ctrl Y"],
+    ["Selecionar bloco de código / tudo", "Ctrl A"],
+  ];
+  let overrides = $derived((config.hotkeys ?? {}) as Record<string, string>);
+  const bound = (c: HotkeyCommand) => (c.id in overrides ? overrides[c.id] : (c.hotkey ?? ""));
+  let hkQuery = $state("");
+  let recording = $state<string | null>(null);
+  let hkNote = $state("");
+  let hkList = $derived(
+    commands.filter((c) => (c.title + " " + showCombo(bound(c))).toLowerCase().includes(hkQuery.toLowerCase())).sort((a, b) => Number(!bound(b)) - Number(!bound(a))),
+  );
+
+  function setHotkey(id: string, combo: string | null) {
+    const next = { ...overrides };
+    const cmd = commands.find((c) => c.id === id);
+    if (combo === null || combo === (cmd?.hotkey ?? "")) delete next[id];
+    else next[id] = combo;
+    hkNote = "";
+    if (combo) {
+      // Quem já usava a combinação fica sem atalho
+      for (const c of commands) {
+        if (c.id !== id && (c.id in next ? next[c.id] : (c.hotkey ?? "")) === combo) {
+          next[c.id] = "";
+          hkNote = `${showCombo(combo)} saiu de “${c.title}”.`;
+        }
+      }
+    }
+    onconfig({ ...config, hotkeys: next });
+  }
+
+  function onRecordKey(e: KeyboardEvent) {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") return void (recording = null);
+    if ((e.key === "Backspace" || e.key === "Delete") && !e.ctrlKey && !e.altKey) {
+      setHotkey(recording, "");
+      recording = null;
+      return;
+    }
+    const combo = comboOf(e);
+    if (!combo) return;
+    if (!validCombo(combo)) {
+      hkNote = "Use Ctrl ou Alt junto com a tecla (ou uma tecla F1–F12).";
+      return;
+    }
+    setHotkey(recording, combo);
+    recording = null;
   }
 
   function toggleIn(list: string[], item: string, on: boolean) {
     return on ? [...new Set([...list, item])] : list.filter((x) => x !== item);
   }
 
-  async function runImport() {
-    importing = true;
-    report = await onimport();
-    importing = false;
-  }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
+<svelte:window onkeydowncapture={onRecordKey} onkeydown={(e) => e.key === "Escape" && !recording && onclose()} />
 
 <div class="sx-overlay" role="presentation" onmousedown={(e) => e.target === e.currentTarget && onclose()}>
   <div class="sx-settings" role="dialog" aria-label="Configurações">
@@ -178,7 +201,7 @@
           </div>
         </div>
         <div class="sx-setting">
-          <div><div class="name">Tema</div><div class="desc">Temas ficam em <code>.silex/themes</code>. Temas importados do Obsidian aplicam as cores e as fontes deles.</div></div>
+          <div><div class="name">Tema</div><div class="desc">Temas ficam em <code>.silex/themes</code>. Temas CSS do Obsidian colocados lá também aplicam as cores e as fontes deles.</div></div>
           <select value={config.theme} onchange={(e) => set("theme", e.currentTarget.value)}>
             <option value="">Silex (padrão)</option>
             {#each appearance.themes as t}<option value={t}>{t}</option>{/each}
@@ -308,42 +331,35 @@
         {:else}
           <div class="sx-empty-note">Nenhum plugin WebAssembly instalado neste cofre.</div>
         {/each}
-      {:else if section === "import"}
-        <h2>Importar do Obsidian</h2>
-        <p class="lead">
-          Copia temas e snippets de <code>.obsidian</code> para <code>.silex</code>, traz as configurações de cada plugin
-          (Jev, Mesa, Templater, Excalidraw, Exportar) para o equivalente nativo e ativa os que estavam ativos. Chaves de API
-          não são copiadas: o Obsidian as guarda à parte, então informe-as em Plugins.
-        </p>
-        <button class="btn-primary" disabled={importing} onclick={runImport}>
-          {importing ? "Importando…" : "Importar temas e analisar plugins"}
-        </button>
-        {#if report}
-          <div class="sx-import-summary">
-            {report.themes.length} tema{report.themes.length === 1 ? "" : "s"} e {report.snippets.length} snippet{report.snippets.length === 1 ? "" : "s"} importados.
-            {#if report.active_theme}O tema ativo no Obsidian era <strong>{report.active_theme}</strong>.{/if}
-          </div>
-          {#if report.active_theme && appearance.themes.includes(report.active_theme)}
-            <button class="btn-ghost" onclick={() => onconfig({ ...config, theme: report!.active_theme!, snippets: [...new Set([...config.snippets, ...report!.enabled_snippets.filter((s) => appearance.snippets.includes(s))])] })}>
-              Usar o tema {report.active_theme}
-            </button>
-          {/if}
-          <div class="sx-import-list">
-            {#each report.plugins as p (p.id)}
-              <div class="sx-import-row">
-                <div>
-                  <div class="name">{p.name}{#if p.enabled_in_obsidian}<span class="ver">ativo no Obsidian</span>{/if}</div>
-                  <div class="desc">{p.note}</div>
-                </div>
-                <span class="sx-badge {STATUS[p.status]?.cls}">{STATUS[p.status]?.label ?? p.status}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
       {:else if section === "hotkeys"}
         <h2>Atalhos</h2>
+        <p class="lead">Clique num atalho e pressione a nova combinação. <kbd>Backspace</kbd> remove, <kbd>Esc</kbd> cancela. Todo comando da paleta pode ganhar um atalho.</p>
+        <div class="sx-hk-tools">
+          <input class="sx-input" type="search" placeholder="Filtrar comandos ou teclas" bind:value={hkQuery} />
+          {#if Object.keys(overrides).length}
+            <button class="btn-ghost sm" onclick={() => ((hkNote = ""), onconfig({ ...config, hotkeys: {} }))}>Restaurar todos</button>
+          {/if}
+        </div>
+        {#if hkNote}<div class="sx-hk-note">{hkNote}</div>{/if}
         <div class="sx-hotkeys">
-          {#each HOTKEYS as [name, key]}
+          {#each hkList as c (c.id)}
+            {@const key = bound(c)}
+            <div class="sx-hotkey" class:is-custom={c.id in overrides}>
+              <span>{c.title}</span>
+              <div class="sx-hotkey-keys">
+                {#if c.id in overrides}
+                  <button class="icon-btn sm" title="Restaurar padrão{c.hotkey ? ` (${showCombo(c.hotkey)})` : ''}" onclick={() => setHotkey(c.id, null)}><Icon name="undo" size={13} /></button>
+                {/if}
+                <button class="sx-hotkey-btn" class:is-recording={recording === c.id} class:is-empty={!key} onclick={() => ((hkNote = ""), (recording = recording === c.id ? null : c.id))}>
+                  {recording === c.id ? "Pressione as teclas…" : key ? showCombo(key) : "Adicionar"}
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+        <div class="sx-ps-group">No editor (fixos)</div>
+        <div class="sx-hotkeys">
+          {#each EDITOR_KEYS as [name, key]}
             <div class="sx-hotkey"><span>{name}</span><kbd>{key}</kbd></div>
           {/each}
         </div>
@@ -352,7 +368,7 @@
           <Logo size={72} />
           <h2>Silex</h2>
           <p>Notas Markdown locais, com núcleo em Rust: índice e busca (tantivy), rustview e plugins WebAssembly.</p>
-          <p class="desc">Versão 0.1.0</p>
+          <p class="desc">Versão {version}</p>
         </div>
       {/if}
     </section>

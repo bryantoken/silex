@@ -1,0 +1,76 @@
+# Publica uma Release a cada push na main. O Silex instalado consulta
+# releases/latest/download/latest.json ao abrir e oferece a atualização.
+#
+# Versão: <major.minor de tauri.conf.json>.<número da execução>, ex.: 0.1.7
+# Segredo necessário (Settings › Secrets and variables › Actions):
+#   TAURI_SIGNING_PRIVATE_KEY  conteúdo de ~/.tauri/silex.key
+# A chave foi gerada sem senha; se um dia usar uma com senha, crie o secret
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD e troque o "" abaixo por ele.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Definir versão
+        shell: bash
+        run: |
+          v=$(node -e '
+            const fs = require("fs");
+            const p = "src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            c.version = c.version.split(".").slice(0, 2).join(".") + "." + process.env.GITHUB_RUN_NUMBER;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
+            console.log(c.version);
+          ')
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "Versão $v"
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: v${{ env.VERSION }}
+          releaseName: Silex ${{ env.VERSION }}
+          releaseBody: ${{ github.event.head_commit.message || 'Nova versão do Silex.' }}
+          releaseDraft: false
+          prerelease: false
+          # O atualizador usa o instalador -setup.exe (por usuário, sem pedir admin)
+          updaterJsonPreferNsis: true

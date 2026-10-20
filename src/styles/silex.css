@@ -614,6 +614,18 @@ kbd {
 .sx-tab.is-drop-target {
   box-shadow: inset 2px 0 0 var(--sx-accent);
 }
+.sx-tab.is-pinned {
+  flex: 0 1 150px;
+  min-width: 70px;
+  padding-right: 10px;
+}
+.sx-tab .pin {
+  display: grid;
+  color: var(--sx-text-faint);
+}
+.sx-tab.is-active .pin {
+  color: var(--sx-text-muted);
+}
 .sx-tab .title {
   flex: 1;
   min-width: 0;
@@ -900,4 +912,27 @@ kbd {
 .sx-wikilink:hover,
 .sx-link:hover {
   text-decoration-color: var(--sx-accent-text);
+}
+
+/* Aviso de nova versão */
+.sx-update {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 8px 8px 8px 14px;
+  border-radius: var(--sx-radius-lg);
+  border: 1px solid var(--sx-border-strong);
+  background: var(--sx-surface-raised);
+  box-shadow: var(--sx-shadow-pop);
+  font-size: var(--sx-text-sm);
+  color: var(--sx-text);
+  animation: sx-rise 160ms var(--sx-ease);
+}
+.sx-update strong {
+  color: var(--sx-text-strong);
 }

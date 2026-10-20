@@ -53,3 +53,8 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Atualizador (desktop): baixa e instala as Releases publicadas pelo GitHub Actions
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-process = "~2.3"
+tauri-plugin-updater = "~2.12"

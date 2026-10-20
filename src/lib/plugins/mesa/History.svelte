@@ -2,7 +2,7 @@
   // Histórico legível da Mesa: agrupa por dia e descreve o que mudou; permite desfazer.
   import { invoke } from "@tauri-apps/api/core";
   import { parse as parseYaml } from "yaml";
-  import { diffDays, fmtDate, STATUS, today, validDate, ymd, type MesaCore, type Rec } from "./core";
+  import { diffDays, fmtDate, recurLabel, STATUS, today, validDate, ymd, type MesaCore, type Rec } from "./core";
   import Icon from "../../components/Icon.svelte";
 
   type Props = { core: MesaCore; all: Rec[]; onedit: (n: Rec) => void; onchanged: () => void };
@@ -43,7 +43,7 @@
     const kind = A.kind || B.kind;
     const out: { label: string; from?: string; to?: string }[] = [];
     if (!before) return [{ label: "Criada" }];
-    const IGNORE = new Set(["revision", "updated", "todayPrev", "base", "proposal", "created", "id", "kind", "date"]);
+    const IGNORE = new Set(["revision", "updated", "todayPrev", "base", "proposal", "created", "id", "kind", "date", "series"]);
     const same = (k: string) => JSON.stringify(B[k] ?? null) === JSON.stringify(A[k] ?? null);
     const dt = (v: unknown) => (validDate(String(v || "")) ? fmtDate(String(v)) : "—");
     const due = (x: Record<string, any>) => (x.deadline === "date" ? dt(x.due) : x.deadline === "month" ? "mês " + (x.due || "?") : x.deadline === "none" ? "sem prazo" : "a definir");
@@ -80,7 +80,9 @@
         const add = [...a].filter((x) => !b.has(x)).length;
         const rem = [...b].filter((x) => !a.has(x)).length;
         out.push({ label: "Tarefas de hoje", to: [add ? `+${add} adicionada(s)` : "", rem ? `−${rem} removida(s)` : ""].filter(Boolean).join(" · ") || "reordenadas" });
-      } else if (k === "silenced") {
+      } else if (k === "pinned") out.push({ label: A.pinned ? "Fixada na Mesa" : "Desafixada" });
+      else if (k === "recur") out.push(A.recur ? { label: "Repetição", to: recurLabel(A.recur) } : { label: "Repetição removida" });
+      else if (k === "silenced") {
         if (A.silenced) out.push({ label: "Dia marcado sem tarefas" });
       } else if (k === "notes" || k === "roots" || k === "ai") {
         if (!out.some((x) => x.label === "Contexto de IA atualizado")) out.push({ label: "Contexto de IA atualizado" });

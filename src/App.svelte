@@ -36,8 +36,12 @@
     type VaultConfig,
     type PluginInfo,
     type Appearance,
-    type ImportReport,
+    type HotkeyCommand,
   } from "./lib/components/Settings.svelte";
+  import { comboOf, showCombo } from "./lib/hotkeys";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { check as checkUpdate, type Update } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
   import VaultPicker, { type SavedVault } from "./lib/components/VaultPicker.svelte";
   import GraphView, { type GraphNote } from "./lib/components/GraphView.svelte";
   import MediaView from "./lib/viewers/MediaView.svelte";
@@ -62,7 +66,7 @@
   type FileNode = { kind: "file"; name: string; path: string; extension: string };
   type TreeNode = FolderNode | FileNode;
   type SearchHit = { path: string; title: string; score: number; snippet: { text: string; hl: boolean }[] };
-  type Tab = { id: number; history: string[]; index: number };
+  type Tab = { id: number; history: string[]; index: number; pinned?: boolean };
   type Doc = { content: string; saved: string };
 
   const GRAPH = "silex:graph";
@@ -85,6 +89,7 @@
     readable_line_width: true,
     core_plugins: null,
     plugin_settings: {},
+    hotkeys: {},
   };
 
   // ---------- Estado ----------
@@ -281,6 +286,45 @@
     new Set([...plugins.filter((p) => p.enabled).flatMap((p) => p.code_blocks), ...(core.has("numerals") ? ["math", "numerals"] : [])]),
   );
 
+  // ---------- Atualização ----------
+  // Ao abrir (e a cada 6 h) consulta a última Release do GitHub; instala só quando o usuário pede
+
+  let appVersion = $state("");
+  let update = $state<Update | null>(null);
+  let updating = $state<number | null>(null);
+
+  async function lookForUpdate(manual = false) {
+    try {
+      const u = await checkUpdate();
+      if (u) update = u;
+      else if (manual) notify(`Você já está na versão mais recente (${appVersion}).`);
+    } catch (e) {
+      if (manual) fail(e);
+    }
+  }
+
+  async function installUpdate() {
+    const u = update;
+    if (!u || updating !== null) return;
+    await Promise.all(Object.keys(docs).map(save));
+    let total = 0;
+    let got = 0;
+    updating = 0;
+    try {
+      await u.downloadAndInstall((ev) => {
+        if (ev.event === "Started") total = ev.data.contentLength ?? 0;
+        else if (ev.event === "Progress") {
+          got += ev.data.chunkLength;
+          updating = total ? got / total : 0;
+        }
+      });
+      await relaunch();
+    } catch (e) {
+      updating = null;
+      fail(e);
+    }
+  }
+
   // ---------- Avisos ----------
 
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -311,8 +355,18 @@
       }
       const cfgCore = enabledCore(config);
       const home = cfgCore.has("jev-home") && pluginSettings<any>(config, "jev-home").onStartup;
-      tabs = [{ id: nextTabId, history: home ? [HOME] : [], index: home ? 0 : -1 }];
-      activeId = nextTabId++;
+      // Abas fixadas voltam ao reabrir o cofre
+      const pinnedPaths = loadPinned(opened.tree.path);
+      const restored: Tab[] = [];
+      for (const p of pinnedPaths) {
+        if (!isView(p) && !treeHas(opened.tree, p)) continue;
+        if (!isView(p) && fileKind(p) === "markdown") await ensureDoc(p).catch(() => {});
+        restored.push({ id: nextTabId++, history: [p], index: 0, pinned: true });
+      }
+      const first: Tab = { id: nextTabId++, history: home ? [HOME] : [], index: home ? 0 : -1 };
+      tabs = [...restored, first];
+      activeId = restored.length && !home ? restored[0].id : first.id;
+      closedTabs = [];
       query = "";
       hits = [];
       toast = null;
@@ -882,8 +936,13 @@
 
   // ---------- Abas ----------
 
+  const treeHas = (node: TreeNode, path: string): boolean =>
+    node.path === path || (node.kind === "folder" && isUnder(path, node.path) && node.children.some((c) => treeHas(c, path)));
+
   async function openFile(path: string, inNewTab = false) {
     touchRecent(path);
+    // Aba fixada não troca de arquivo: o novo abre ao lado
+    if (!inNewTab && activeTab?.pinned && pathOf(activeTab) && pathOf(activeTab) !== path) inNewTab = true;
     if (!isView(path) && fileKind(path) === "markdown") {
       try {
         await ensureDoc(path);
@@ -958,14 +1017,64 @@
     activeId = tab.id;
   }
 
-  function closeTab(id: number) {
+  /** Fecha a aba. Aba fixada só fecha com force (menu da aba). */
+  function closeTab(id: number, force = false) {
     const i = tabs.findIndex((t) => t.id === id);
     if (i < 0) return;
+    if (tabs[i].pinned && !force) return notify("Aba fixada. Desafixe (clique direito) para fechar.");
     const path = pathOf(tabs[i]);
     if (path && !isView(path)) save(path);
+    if (tabs[i].history.length) closedTabs = [...closedTabs.slice(-19), { history: [...tabs[i].history], index: tabs[i].index }];
     tabs.splice(i, 1);
     if (tabs.length === 0) tabs.push({ id: nextTabId++, history: [], index: -1 });
     if (id === activeId) activeId = tabs[Math.min(i, tabs.length - 1)].id;
+  }
+
+  // Abas fechadas recentemente (Ctrl+Shift+T reabre)
+  let closedTabs = $state<{ history: string[]; index: number }[]>([]);
+  async function reopenTab() {
+    const last = closedTabs.at(-1);
+    if (!last) return;
+    closedTabs = closedTabs.slice(0, -1);
+    const path = last.history[last.index];
+    if (path && !isView(path) && fileKind(path) === "markdown") await ensureDoc(path).catch(() => {});
+    const tab: Tab = { id: nextTabId++, history: last.history, index: last.index };
+    tabs.push(tab);
+    activeId = tab.id;
+  }
+
+  function togglePinTab(id: number) {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.pinned = !tab.pinned;
+    sortPinned();
+  }
+  /** Fixadas ficam sempre à esquerda, na ordem em que estão */
+  function sortPinned() {
+    tabs = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
+  }
+
+  const pinnedKey = (vault: string) => `silex.pinned:${vault}`;
+  function loadPinned(vault: string): string[] {
+    try {
+      const v = JSON.parse(localStorage.getItem(pinnedKey(vault)) ?? "[]");
+      return Array.isArray(v) ? v.filter((p) => typeof p === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+  $effect(() => {
+    const vault = tree?.path;
+    const paths = tabs.filter((t) => t.pinned).map(pathOf).filter((p): p is string => !!p);
+    if (!vault) return;
+    try {
+      localStorage.setItem(pinnedKey(vault), JSON.stringify(paths));
+    } catch {}
+  });
+
+  function goTab(n: number) {
+    const t = n === 9 ? tabs.at(-1) : tabs[n - 1];
+    if (t) activeId = t.id;
   }
 
   function cycleTab(dir: 1 | -1) {
@@ -999,6 +1108,7 @@
       moved,
     );
     draggedTab = null;
+    sortPinned();
   }
 
   // ---------- Editor ----------
@@ -1172,27 +1282,40 @@
     e.preventDefault();
     const path = pathOf(tab);
     popupMenu([
-      { text: "Fechar", action: () => closeTab(tab.id) },
-      { text: "Fechar outras abas", action: () => tabs.filter((t) => t.id !== tab.id).forEach((t) => closeTab(t.id)) },
+      { text: tab.pinned ? "Desafixar aba" : "Fixar aba", action: () => togglePinTab(tab.id) },
+      "separator",
+      { text: "Fechar", action: () => closeTab(tab.id, true) },
+      { text: "Fechar outras abas", action: () => closeOthers(tab.id) },
       ...(path && !isView(path)
         ? (["separator", { text: "Mostrar no Explorador", action: () => revealItemInDir(path) }] as MenuEntry[])
         : []),
     ]);
   }
 
+  /** Fecha as outras abas (as fixadas ficam) */
+  function closeOthers(id: number) {
+    tabs.filter((t) => t.id !== id && !t.pinned).forEach((t) => closeTab(t.id));
+  }
+
   // ---------- Paleta ----------
 
-  let commandItems = $derived.by((): PaletteItem[] => {
+  /** Comando da paleta. hotkey é o atalho padrão; editor = só com o editor focado;
+   *  typing = false não dispara com o foco num campo de texto. */
+  type Command = PaletteItem & { when?: boolean; editor?: boolean; typing?: boolean };
+
+  let baseCommands = $derived.by((): Command[] => {
     const hasNote = activeKind === "markdown";
     const v = () => view();
-    const items: (PaletteItem & { when?: boolean })[] = [
-      { id: "note.new", title: "Criar nova nota", hotkey: "Ctrl N", icon: "edit", run: () => newNote() },
-      { id: "folder.new", title: "Criar nova pasta", icon: "folder-plus", run: () => newFolder() },
-      { id: "switcher", title: "Abrir arquivo rapidamente", hotkey: "Ctrl O", icon: "file", run: () => openPalette("files") },
-      { id: "search", title: "Buscar no cofre", hotkey: "Ctrl Shift F", icon: "search", run: openSearch },
-      { id: "graph", title: "Abrir visualização em grafo", hotkey: "Ctrl G", icon: "graph", run: openGraph },
-      { id: "settings", title: "Abrir configurações", hotkey: "Ctrl ,", icon: "settings", run: () => (settingsOpen = true) },
-      { id: "vaults", title: "Trocar de cofre…", icon: "vaults", run: () => (showVaults = true) },
+    const items: Command[] = [
+      { id: "palette", title: "Abrir paleta de comandos", hotkey: "Ctrl+P", icon: "command", run: () => openPalette("commands") },
+      { id: "note.save", title: "Salvar agora", hotkey: "Ctrl+S", icon: "check", run: () => activeDoc && activePath && save(activePath) },
+      { id: "note.new", title: "Criar nova nota", hotkey: "Ctrl+N", icon: "edit", run: () => newNote() },
+      { id: "folder.new", title: "Criar nova pasta", hotkey: "Ctrl+Shift+N", icon: "folder-plus", run: () => newFolder() },
+      { id: "switcher", title: "Abrir arquivo rapidamente", hotkey: "Ctrl+O", icon: "file", run: () => openPalette("files") },
+      { id: "search", title: "Buscar no cofre", hotkey: "Ctrl+Shift+F", icon: "search", run: openSearch },
+      { id: "graph", title: "Abrir visualização em grafo", hotkey: "Ctrl+G", icon: "graph", run: openGraph },
+      { id: "settings", title: "Abrir configurações", hotkey: "Ctrl+,", icon: "settings", run: () => (settingsOpen = true) },
+      { id: "vaults", title: "Trocar de cofre…", hotkey: "Ctrl+Shift+O", icon: "vaults", run: () => (showVaults = true) },
       {
         id: "prop.add",
         title: "Adicionar propriedade à nota",
@@ -1205,28 +1328,43 @@
       },
       {
         id: "note.rename",
-        title: "Renomear nota atual",
+        title: "Renomear arquivo atual",
         hotkey: "F2",
         icon: "pencil",
-        when: hasNote,
-        run: () => tick().then(() => (titleInput?.focus(), titleInput?.select())),
+        when: !!activeKind,
+        typing: false,
+        run: () => (activeKind === "markdown" ? tick().then(() => (titleInput?.focus(), titleInput?.select())) : activePath && (renaming = activePath)),
       },
       { id: "note.move", title: "Mover arquivo atual para…", icon: "folder-input", when: !!activeKind, run: () => activePath && (movePick = activePath) },
       { id: "dock", title: showDock ? "Ocultar barra de formatação" : "Mostrar barra de formatação", icon: "bold", when: hasNote, run: toggleDock },
       { id: "note.delete", title: "Excluir arquivo atual", icon: "trash", when: !!activeKind, run: () => activePath && deletePath(activePath) },
-      { id: "note.reveal", title: "Revelar arquivo na árvore", icon: "folder", when: !!activeKind, run: () => {
+      { id: "note.reveal", title: "Revelar arquivo na árvore", hotkey: "Ctrl+Shift+E", icon: "folder", when: !!activeKind, run: () => {
           if (!activePath) return;
           sidebarOpen = true;
           panel = "files";
           reveal(activePath);
         } },
-      { id: "source", title: livePreview ? "Mudar para modo fonte (Markdown cru)" : "Mudar para visualização ao vivo", hotkey: "Ctrl E", icon: "code", when: hasNote, run: () => (livePreview = !livePreview) },
-      { id: "sidebar", title: "Alternar barra lateral", hotkey: "Ctrl B", icon: "sidebar", run: () => (sidebarOpen = !sidebarOpen) },
-      { id: "tab.new", title: "Nova aba", hotkey: "Ctrl T", icon: "plus", run: newTab },
-      { id: "tab.close", title: "Fechar aba", hotkey: "Ctrl W", icon: "x", run: () => closeTab(activeId) },
+      { id: "source", title: livePreview ? "Mudar para modo fonte (Markdown cru)" : "Mudar para visualização ao vivo", hotkey: "Ctrl+E", icon: "code", when: hasNote, run: () => (livePreview = !livePreview) },
+      { id: "sidebar", title: "Alternar barra lateral", hotkey: "Ctrl+B", icon: "sidebar", run: () => (sidebarOpen = !sidebarOpen) },
+      { id: "tab.new", title: "Nova aba", hotkey: "Ctrl+T", icon: "plus", run: newTab },
+      { id: "tab.close", title: "Fechar aba", hotkey: "Ctrl+W", icon: "x", run: () => closeTab(activeId) },
+      { id: "tab.reopen", title: "Reabrir aba fechada", hotkey: "Ctrl+Shift+T", icon: "undo", run: reopenTab },
+      { id: "tab.pin", title: activeTab?.pinned ? "Desafixar aba" : "Fixar aba", hotkey: "Ctrl+Alt+P", icon: "pin", run: () => togglePinTab(activeId) },
+      { id: "tab.close-others", title: "Fechar outras abas", icon: "x", run: () => closeOthers(activeId) },
+      { id: "tab.next", title: "Próxima aba", hotkey: "Ctrl+Tab", icon: "forward", run: () => cycleTab(1) },
+      { id: "tab.prev", title: "Aba anterior", hotkey: "Ctrl+Shift+Tab", icon: "back", run: () => cycleTab(-1) },
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
+        id: `tab.go.${n}`,
+        title: n === 9 ? "Ir para a última aba" : `Ir para a aba ${n}`,
+        hotkey: `Ctrl+${n}`,
+        icon: "file",
+        run: () => goTab(n),
+      })),
+      { id: "nav.back", title: "Voltar", hotkey: "Alt+ArrowLeft", icon: "back", run: () => navigate(-1) },
+      { id: "nav.forward", title: "Avançar", hotkey: "Alt+ArrowRight", icon: "forward", run: () => navigate(1) },
+      { id: "app.update", title: "Verificar atualizações do Silex", icon: "download", run: () => lookForUpdate(true) },
       { id: "vault.reload", title: "Recarregar cofre", icon: "refresh", run: () => refreshTree() },
-      { id: "obsidian.import", title: "Importar temas e plugins do Obsidian", icon: "repeat", run: () => (settingsOpen = true) },
-      { id: "task.toggle", title: "Alternar tarefa", hotkey: "Ctrl L", icon: "check", when: hasNote, run: () => {
+      { id: "task.toggle", title: "Alternar tarefa", hotkey: "Ctrl+L", icon: "check", when: hasNote, editor: true, run: () => {
           const ev = v();
           if (ev) ed.setTaskStatus(ev, null);
         } },
@@ -1254,20 +1392,24 @@
           const ev = v();
           if (ev) ed.insertBlock(ev, RUSTVIEW_SAMPLE);
         } },
+      { id: "insert.link", title: "Inserir link para nota", hotkey: "Ctrl+K", icon: "link", when: hasNote, editor: true, run: () => {
+          const ev = v();
+          if (ev) ed.insertWikilink(ev);
+        } },
       { id: "insert.table", title: "Inserir tabela", icon: "sheet", when: hasNote, run: () => {
           const ev = v();
           if (ev) ed.insertTable(ev);
         } },
-      { id: "line.up", title: "Mover linha para cima", hotkey: "Ctrl Shift ↑", icon: "back", when: hasNote, run: () => {
+      { id: "line.up", title: "Mover linha para cima", hotkey: "Ctrl+Shift+ArrowUp", icon: "back", when: hasNote, editor: true, run: () => {
           const ev = v();
           if (ev) ed.moveLines(ev, -1, livePreview);
         } },
-      { id: "line.down", title: "Mover linha para baixo", hotkey: "Ctrl Shift ↓", icon: "forward", when: hasNote, run: () => {
+      { id: "line.down", title: "Mover linha para baixo", hotkey: "Ctrl+Shift+ArrowDown", icon: "forward", when: hasNote, editor: true, run: () => {
           const ev = v();
           if (ev) ed.moveLines(ev, 1, livePreview);
         } },
       // ----- Plugins nativos -----
-      { id: "jev-home.open", title: "Jev Home: abrir página inicial", icon: "search", when: core.has("jev-home"), run: () => openView(HOME) },
+      { id: "jev-home.open", title: "Jev Home: abrir página inicial", hotkey: "Ctrl+Shift+H", icon: "search", when: core.has("jev-home"), run: () => openView(HOME) },
       { id: "jev-home.open-tab", title: "Jev Home: abrir página inicial em nova aba", icon: "search", when: core.has("jev-home"), run: () => openFile(HOME, true) },
       { id: "jev-home.reindex", title: "Jev Home: reindexar notas", icon: "refresh", when: core.has("jev-home"), run: async () => notify(`${await invoke<number>("jev_home_reindex")} notas indexadas.`) },
       { id: "organizer.open", title: "Jev Organizer: abrir sugestões", icon: "zap", when: core.has("jev-organizer"), run: () => openView(ORGANIZER) },
@@ -1281,8 +1423,8 @@
           const r = await invoke<any>("organizer_scan", { scope: null, force: false }).catch(fail);
           if (r) notify(r.message ?? `Jev: ${r.done - r.errors} nota(s) analisada(s).`);
         } },
-      { id: "mesa.open", title: "Mesa: abrir mesa", icon: "clipboard", when: core.has("mesa"), run: () => openView(MESA) },
-      { id: "mesa.capture", title: "Mesa: capturar tarefa", icon: "plus", when: core.has("mesa"), run: () => {
+      { id: "mesa.open", title: "Mesa: abrir mesa", hotkey: "Ctrl+Shift+M", icon: "clipboard", when: core.has("mesa"), run: () => openView(MESA) },
+      { id: "mesa.capture", title: "Mesa: capturar tarefa", hotkey: "Ctrl+Alt+N", icon: "plus", when: core.has("mesa"), run: () => {
           openView(MESA);
           mesaCapture = { text: "", source: null, n: Date.now() };
         } },
@@ -1306,7 +1448,7 @@
         when: core.has("export") && hasNote && !!pandoc,
         run: () => exportNote(f),
       })),
-      { id: "chat.toggle", title: "Chat: abrir/fechar", hotkey: "Ctrl J", icon: "chat", when: core.has("chat"), run: toggleChat },
+      { id: "chat.toggle", title: "Chat: abrir/fechar", hotkey: "Ctrl+J", icon: "chat", when: core.has("chat"), run: toggleChat },
       { id: "chat.popup", title: "Chat: abrir em janela flutuante", icon: "popup", when: core.has("chat"), run: () => setChatMode("popup") },
       { id: "chat.side", title: "Chat: abrir no painel lateral", icon: "panel-right", when: core.has("chat"), run: () => setChatMode("side") },
       { id: "canvas.new", title: "Criar novo canvas", icon: "graph", when: core.has("canvas"), run: newCanvas },
@@ -1326,7 +1468,19 @@
           })),
         ),
     ];
-    return items.filter((i) => i.when !== false);
+    return items;
+  });
+  // Atalho efetivo: o do usuário (config.hotkeys; "" = nenhum) ou o padrão
+  let allCommands = $derived.by((): Command[] => {
+    const custom = (config.hotkeys ?? {}) as Record<string, string>;
+    return baseCommands.map((i) => (i.id in custom ? { ...i, hotkey: custom[i.id] } : i));
+  });
+  let commandItems = $derived(allCommands.filter((i) => i.when !== false).map((i) => ({ ...i, hotkey: showCombo(i.hotkey) })));
+  let hotkeyCommands = $derived<HotkeyCommand[]>(baseCommands.map((c) => ({ id: c.id, title: c.title, hotkey: c.hotkey })));
+  let bindings = $derived.by(() => {
+    const m = new Map<string, Command>();
+    for (const c of allCommands) if (c.hotkey && c.when !== false && !m.has(c.hotkey)) m.set(c.hotkey, c);
+    return m;
   });
 
   let fileItems = $derived(
@@ -1361,17 +1515,6 @@
     }
   }
 
-  async function importObsidian(): Promise<ImportReport | null> {
-    try {
-      const report = await invoke<ImportReport>("import_obsidian");
-      appearance = await invoke<Appearance>("list_appearance");
-      return report;
-    } catch (e) {
-      fail(e);
-      return null;
-    }
-  }
-
   // ---------- Barra lateral ----------
 
   function autofocusBtn(node: HTMLButtonElement) {
@@ -1403,61 +1546,18 @@
 
   // ---------- Atalhos ----------
 
+  // Fase de captura: o atalho vale antes do editor tratar a tecla
   function onKeydown(e: KeyboardEvent) {
-    const mod = e.ctrlKey || e.metaKey;
-    const key = e.key.toLowerCase();
-    const typing = (e.target as HTMLElement)?.matches?.("input, textarea, select");
-    if (palette || settingsOpen || showVaults || movePick || confirmState || exportState) return;
-    if (mod && e.key === "Tab") {
-      e.preventDefault();
-      cycleTab(e.shiftKey ? -1 : 1);
-    } else if (mod && e.shiftKey && key === "f") {
-      e.preventDefault();
-      openSearch();
-    } else if (mod && key === "p") {
-      e.preventDefault();
-      openPalette("commands");
-    } else if (mod && key === "o") {
-      e.preventDefault();
-      openPalette("files");
-    } else if (mod && key === "g") {
-      e.preventDefault();
-      openGraph();
-    } else if (mod && e.key === ",") {
-      e.preventDefault();
-      settingsOpen = true;
-    } else if (mod && key === "s") {
-      e.preventDefault();
-      if (activeDoc && activePath) save(activePath);
-    } else if (mod && key === "n") {
-      e.preventDefault();
-      newNote();
-    } else if (mod && key === "t") {
-      e.preventDefault();
-      newTab();
-    } else if (mod && key === "w") {
-      e.preventDefault();
-      closeTab(activeId);
-    } else if (mod && key === "e") {
-      e.preventDefault();
-      livePreview = !livePreview;
-    } else if (mod && key === "j" && core.has("chat")) {
-      e.preventDefault();
-      toggleChat();
-    } else if (mod && key === "b") {
-      e.preventDefault();
-      sidebarOpen = !sidebarOpen;
-    } else if (e.key === "F2" && !typing) {
-      e.preventDefault();
-      if (activeKind === "markdown") titleInput?.focus();
-      else if (activePath && !isView(activePath)) renaming = activePath;
-    } else if (e.altKey && e.key === "ArrowLeft") {
-      e.preventDefault();
-      navigate(-1);
-    } else if (e.altKey && e.key === "ArrowRight") {
-      e.preventDefault();
-      navigate(1);
-    }
+    if (palette || settingsOpen || showVaults || movePick || confirmState || exportState || templatePick || promptState) return;
+    const combo = comboOf(e);
+    const cmd = combo ? bindings.get(combo) : undefined;
+    if (!cmd) return;
+    const typing = (e.target as HTMLElement)?.matches?.("input, textarea, select, [contenteditable]");
+    if (cmd.editor && !view()?.hasFocus) return;
+    if (cmd.typing === false && typing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cmd.run({ ctrl: false });
   }
 
   /** Menu de contexto nativo também em campos de texto; o menu HTML do webview fica desativado. */
@@ -1481,6 +1581,9 @@
         booting = false;
       }
     })();
+    getVersion().then((v) => (appVersion = v)).catch(() => {});
+    const firstCheck = setTimeout(() => lookForUpdate(), 4000);
+    const updateTimer = setInterval(() => lookForUpdate(), 6 * 3600e3);
     const flush = () => Object.keys(docs).forEach(save);
     // Arquivo solto fora do editor: sem isso o webview navegaria até ele
     const noFileDrop = (e: DragEvent) => {
@@ -1491,6 +1594,8 @@
     window.addEventListener("dragover", noFileDrop);
     window.addEventListener("drop", noFileDrop);
     return () => {
+      clearTimeout(firstCheck);
+      clearInterval(updateTimer);
       window.removeEventListener("beforeunload", flush);
       window.removeEventListener("focus", reloadChanged);
       window.removeEventListener("dragover", noFileDrop);
@@ -1499,7 +1604,7 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeydown} oncontextmenu={onContextMenu} />
+<svelte:window onkeydowncapture={onKeydown} oncontextmenu={onContextMenu} />
 
 {#snippet treeItems(nodes: TreeNode[])}
   {#each nodes as node (node.path)}
@@ -1704,6 +1809,7 @@
           {@const path = pathOf(tab)}
           <div
             class="sx-tab"
+            class:is-pinned={tab.pinned}
             class:is-active={tab.id === activeId}
             class:is-drop-target={dropTarget === tab.id}
             role="tab"
@@ -1723,18 +1829,21 @@
             ondragleave={() => dropTarget === tab.id && (dropTarget = null)}
             ondrop={() => onTabDrop(tab.id)}
           >
+            {#if tab.pinned}<span class="pin" title="Aba fixada"><Icon name="pin" size={12} stroke={2} /></span>{/if}
             {#if path && isView(path)}<Icon name={VIEW_ICONS[path] ?? "file"} size={13} />{:else if path && fileKind(path) !== "markdown"}<Icon name={KIND_ICON[fileKind(path)]} size={13} />{/if}
             <span class="title">{tabTitle(path)}</span>
-            <button
-              class="close"
-              aria-label="Fechar aba"
-              onclick={(e) => {
-                e.stopPropagation();
-                closeTab(tab.id);
-              }}
-            >
-              <Icon name="x" size={13} stroke={2} />
-            </button>
+            {#if !tab.pinned}
+              <button
+                class="close"
+                aria-label="Fechar aba"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id);
+                }}
+              >
+                <Icon name="x" size={13} stroke={2} />
+              </button>
+            {/if}
           </div>
         {/each}
         <button class="icon-btn sm" title="Nova aba (Ctrl+T)" onclick={newTab}><Icon name="plus" size={15} stroke={2} /></button>
@@ -1902,6 +2011,19 @@
           </div>
         {/if}
 
+        {#if update}
+          <div class="sx-update" title={update.body ?? ""}>
+            <Icon name="download" size={15} />
+            <span>
+              Nova versão <strong>{update.version}</strong> disponível{updating !== null ? ` · baixando ${Math.round(updating * 100)}%` : ""}
+            </span>
+            <button class="btn-primary sm" disabled={updating !== null} onclick={installUpdate}>Atualizar e reiniciar</button>
+            {#if updating === null}
+              <button class="icon-btn sm" title="Depois" aria-label="Lembrar depois" onclick={() => (update = null)}><Icon name="x" size={13} stroke={2} /></button>
+            {/if}
+          </div>
+        {/if}
+
         {#if toast}
           <button class="sx-toast" class:is-error={toast.error} title="Clique para dispensar" onclick={() => (toast = null)}>{toast.text}</button>
         {/if}
@@ -2015,7 +2137,8 @@
     oninstall={installPlugin}
     onopenplugins={() => invoke<string>("plugins_dir").then(openPath).catch(fail)}
     onopenthemes={() => appearance.dir && openPath(appearance.dir).catch(fail)}
-    onimport={importObsidian}
+    commands={hotkeyCommands}
+    version={appVersion}
     onvaults={() => ((settingsOpen = false), (showVaults = true))}
     onclose={async () => {
       settingsOpen = false;

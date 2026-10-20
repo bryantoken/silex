@@ -4,8 +4,8 @@
    * Mesa/ do cofre (mesmo formato), núcleo de arquivos e IA em Rust.
    */
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount, untrack } from "svelte";
-  import { compactMarkdown, eligible, fmtDate, MesaCore, prioLabel, prioLevel, statusOf, taskRange, today, type Rec, type Settings } from "./core";
+  import { onMount, tick, untrack } from "svelte";
+  import { compactMarkdown, eligible, fmtDate, MesaCore, prioLabel, prioLevel, recurLabel, statusOf, taskRange, today, type Rec, type Settings } from "./core";
   import Forms, { type FormKind } from "./Forms.svelte";
   import Calendar from "./Calendar.svelte";
   import Usage from "./Usage.svelte";
@@ -75,19 +75,36 @@
     ...load_.committed.filter((n) => planned.includes(n.data.id)),
     ...load_.committed.filter((n) => !planned.includes(n.data.id)).sort((a, b) => (taskRange(a)?.end || "").localeCompare(taskRange(b)?.end || "")),
   ]);
+  // Fixadas ficam sempre na Mesa (fora da lista de hoje para não repetir)
+  let pinned = $derived(version >= 0 ? core.ordered(tasks.filter((n) => n.data.pinned && n.data.state === "pending"), "pinned") : []);
+  let todayList = $derived(version >= 0 ? core.ordered(selected.filter((n) => !n.data.pinned), "today") : []);
+  // Capturadas nas últimas 48 h aparecem no topo até entrarem no fluxo (fixar, hoje)
+  const since = () => new Date(Date.now() - 48 * 3600e3).toISOString();
+  let fresh = $derived(
+    tasks
+      .filter((n) => n.data.state === "pending" && !n.data.pinned && !selected.includes(n) && String(n.data.created || "") >= since())
+      .sort((a, b) => String(b.data.created).localeCompare(String(a.data.created)))
+      .slice(0, 8),
+  );
   let nextUp = $derived(
     version < 0
       ? []
       : tasks
-      .filter((n) => eligible(n, projects) && !selected.includes(n))
+      .filter((n) => eligible(n, projects) && !selected.includes(n) && !n.data.pinned && !fresh.includes(n))
       .map((n, i) => [n, core.prioOf(n) ?? -1, i] as const)
       .sort((a, b) => b[1] - a[1] || a[2] - b[2])
       .map(([n]) => n)
       .slice(0, 5),
   );
   const triage = (n: Rec) => !n.data.project || n.data.deadline === "pending";
+  const newest = (k: string) => (a: Rec, b: Rec) => String(b.data[k] || b.data.created || "").localeCompare(String(a.data[k] || a.data.created || ""));
   let filtered = $derived(
-    (tab === "Arquivadas" ? [...archived].sort((a, b) => String(b.data.archived).localeCompare(String(a.data.archived))) : tasks).filter(
+    (tab === "Arquivadas"
+      ? [...archived].sort(newest("archived"))
+      : tab === "Concluídas"
+        ? [...tasks].sort(newest("updated"))
+        : [...tasks].sort((a, b) => Number(!!b.data.pinned) - Number(!!a.data.pinned) || newest("created")(a, b))
+    ).filter(
       (n) =>
         (tab === "Arquivadas" || (tab === "Concluídas" ? n.data.state !== "pending" : n.data.state === "pending")) &&
         (!triageOnly || tab !== "Pendências" || triage(n)) &&
@@ -134,59 +151,132 @@
   });
 
   const projectOf = (n: Rec) => projects.find((p) => p.data.id === n.data.project);
+
+  // ----- Ver sugestão: abre a aba e destaca a proposta da tarefa -----
+  let focusSugg = $state<string | null>(null);
+  function showSuggestion(n: Rec) {
+    focusSugg = suggestions.find((s) => s.data.type === "enrich" && s.data.target === n.path)?.data.id ?? null;
+    tab = "Sugestões";
+  }
+  $effect(() => {
+    const id = focusSugg;
+    if (tab !== "Sugestões" || !id) return;
+    tick().then(() => document.getElementById("mesa-sugg-" + id)?.scrollIntoView({ block: "center", behavior: "smooth" }));
+    const t = setTimeout(() => focusSugg === id && (focusSugg = null), 3000);
+    return () => clearTimeout(t);
+  });
+
+  // ----- Recém-criada: destaca na lista -----
+  let flashId = $state<string | null>(null);
+  function created(n?: Rec) {
+    load();
+    if (!n) return;
+    if (!["Mesa", "Pendências"].includes(tab)) tab = "Mesa";
+    flashId = n.data.id;
+    setTimeout(() => flashId === n.data.id && (flashId = null), 2500);
+  }
+
+  // ----- Arrastar para reordenar (Fixadas e Hoje) -----
+  let grab = $state<string | null>(null);
+  let drag = $state<{ key: string; id: string } | null>(null);
+  let dropAt = $state<{ id: string; after: boolean } | null>(null);
+  function dragOver(e: DragEvent, key: string, n: Rec) {
+    if (!drag || drag.key !== key || drag.id === n.data.id) return;
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropAt = { id: n.data.id, after: e.clientY > r.top + r.height / 2 };
+  }
+  function drop(key: string, list: Rec[]) {
+    const d = drag;
+    const at = dropAt;
+    drag = dropAt = grab = null;
+    if (!d || !at || d.key !== key) return;
+    const ids = list.map((n) => n.data.id).filter((id) => id !== d.id);
+    ids.splice(ids.indexOf(at.id) + (at.after ? 1 : 0), 0, d.id);
+    core.reorder(key, ids);
+    version++;
+  }
 </script>
 
-{#snippet card(n: Rec, inToday: boolean | "cal" = false)}
+{#snippet card(n: Rec, inToday: boolean | "cal" = false, dragKey: string | null = null, list: Rec[] = [])}
   {@const [statusKey, statusLabel] = statusOf(n)}
   {@const prio = n.data.state === "pending" && !n.data.archived && version >= 0 ? core.prioOf(n) : undefined}
   {@const range = taskRange(n)}
-  <div class="mesa-card mesa-s-{statusKey}">
-    <div class="mesa-card-top">
-      <input type="checkbox" checked={n.data.state === "done"} onchange={(e) => act(() => core.update(n, { state: e.currentTarget.checked ? "done" : "pending" }))} />
-      <button class="mesa-task-title" onclick={() => (form = { type: "task", task: n })}>{n.data.title}</button>
-      <span class="mesa-status mesa-s-{statusKey}">{statusLabel}</span>
-      {#if prio !== undefined}
-        <span class="mesa-status mesa-prio mesa-prio-{prioLevel(prio)}" title="Prioridade pelo Jev: {prio.toFixed(1).replace('.', ',')} de 3">{prioLabel(prio)}</span>
-      {/if}
+  {@const recur = recurLabel(n.data.recur)}
+  {@const sub = [n.data.next, n.data.blocked ? "Bloqueada: " + n.data.blocked : "", n.data.defer ? "Adiada até " + fmtDate(String(n.data.defer)) : ""].filter(Boolean).join(" · ")}
+  {@const pending = n.data.state === "pending" && !n.data.archived}
+  {@const ready_ = enrichReady.has(n.path)}
+  {@const busy = version >= 0 && core.enriching.has(n.data.id)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="mesa-row mesa-s-{statusKey}"
+    class:is-pinned={n.data.pinned && !n.data.archived}
+    class:is-closed={n.data.state !== "pending"}
+    class:is-flash={flashId === n.data.id}
+    class:is-dragging={drag?.id === n.data.id}
+    class:drop-before={dropAt?.id === n.data.id && !dropAt?.after}
+    class:drop-after={dropAt?.id === n.data.id && !!dropAt?.after}
+    draggable={!!dragKey && grab === n.data.id}
+    ondragstart={(e) => dragKey && ((drag = { key: dragKey, id: n.data.id }), e.dataTransfer?.setData("text/plain", n.data.title))}
+    ondragover={(e) => dragKey && dragOver(e, dragKey, n)}
+    ondrop={(e) => (e.preventDefault(), dragKey && drop(dragKey, list))}
+    ondragend={() => (drag = dropAt = grab = null)}
+  >
+    {#if dragKey}
+      <span class="mesa-grip" title="Arraste para reordenar" onpointerdown={() => (grab = n.data.id)} onpointerup={() => !drag && (grab = null)}>
+        <Icon name="grip" size={14} stroke={3} />
+      </span>
+    {/if}
+    <label class="mesa-check" title={n.data.state === "done" ? "Reabrir" : "Concluir"}>
+      <input type="checkbox" checked={n.data.state === "done"} onchange={(e) => act(() => core.setState(n, e.currentTarget.checked ? "done" : "pending"))} />
+      <span><Icon name="check" size={11} stroke={3} /></span>
+    </label>
+    <div class="mesa-row-main">
+      <button class="mesa-task-title" title={n.data.title} onclick={() => (form = { type: "task", task: n })}>
+        {#if n.data.pinned && !n.data.archived}<span class="mesa-row-pin"><Icon name="pin" size={11} stroke={2.2} /></span>{/if}{n.data.title}
+      </button>
+      {#if sub}<div class="mesa-row-sub" title={sub}>{sub}</div>{/if}
     </div>
-    <div class="mesa-muted">
-      {[
-        projectOf(n)?.data.title || "Projeto a identificar",
-        n.data.deadline === "pending"
-          ? "Prazo a definir"
-          : range
-            ? (range.start !== range.end && !range.month ? `${fmtDate(range.start)} → ` : "") + (range.month ? "Mês " + n.data.due : fmtDate(range.end))
-            : "",
-        n.data.blocked ? "Bloqueada: " + n.data.blocked : "",
-        n.data.defer ? "Adiada até " + n.data.defer : "",
-      ]
-        .filter(Boolean)
-        .join(" · ")}
-    </div>
-    {#if n.data.next}<p class="mesa-next">{n.data.next}</p>{/if}
-    <div class="mesa-actions">
-      {#if inToday === "cal"}
-        <span class="mesa-muted">No calendário para hoje · ajuste as datas para tirar</span>
-      {:else if n.data.state === "pending" && !n.data.archived}
-        <button class="btn-ghost sm" onclick={() => act(() => (inToday ? core.removeToday(n) : core.acceptToday(n)))}>{inToday ? "Tirar de hoje" : "Fazer hoje"}</button>
-      {/if}
-      {#if n.data.archived}
-        <button class="btn-ghost sm" onclick={() => act(() => core.archive(n, false))}>Restaurar</button>
-      {:else if n.data.state === "pending"}
-        {@const ready_ = enrichReady.has(n.path)}
-        {@const busy = version >= 0 && core.enriching.has(n.data.id)}
+    <span class="mesa-row-proj" class:is-empty={!projectOf(n)} title={projectOf(n)?.data.title || "Projeto a identificar"}>{projectOf(n)?.data.title || "—"}</span>
+    <span class="mesa-row-date" title={range && range.start !== range.end && !range.month ? `${fmtDate(range.start)} → ${fmtDate(range.end)}` : ""}>
+      {#if recur}<span class="mesa-row-recur" title={recur}><Icon name="repeat" size={11} stroke={2} /></span>{/if}
+      {n.data.deadline === "pending" ? "a definir" : range ? (range.month ? "Mês " + String(n.data.due).slice(5) : fmtDate(range.end)) : "—"}
+    </span>
+    <span class="mesa-row-status"><i class="mesa-dot"></i>{statusLabel}</span>
+    {#if prio !== undefined}
+      <span class="mesa-row-prio mesa-prio-{prioLevel(prio)}" title="Prioridade pelo Jev: {prio.toFixed(1).replace('.', ',')} de 3"><i class="mesa-dot"></i>{prioLabel(prio)}</span>
+    {:else}
+      <span class="mesa-row-prio"></span>
+    {/if}
+    <div class="mesa-row-actions">
+      {#if pending}
+        <button class="icon-btn sm" class:is-on={n.data.pinned} title={n.data.pinned ? "Desafixar da Mesa" : "Fixar na Mesa"} onclick={() => act(() => core.togglePin(n))}>
+          <Icon name="pin" size={14} />
+        </button>
+        {#if inToday === "cal"}
+          <button class="icon-btn sm is-on" disabled title="No calendário para hoje · ajuste as datas para tirar"><Icon name="sun" size={14} /></button>
+        {:else}
+          <button class="icon-btn sm" class:is-on={inToday} title={inToday ? "Tirar de hoje" : "Fazer hoje"} onclick={() => act(() => (inToday ? core.removeToday(n) : core.acceptToday(n)))}>
+            <Icon name="sun" size={14} />
+          </button>
+        {/if}
         <button
-          class="btn-ghost sm mesa-enrich"
+          class="icon-btn sm mesa-enrich"
           class:is-ready={ready_}
+          class:is-busy={busy}
           disabled={busy || (!ready_ && !core.hasAi)}
-          title={ready_ ? "Há uma proposta pronta na aba Sugestões" : busy ? "A IA está preparando a proposta" : core.hasAi ? "Gerar enriquecimento com IA (uma chamada)" : "Informe a API key em Configurações › Mesa"}
-          onclick={() => (ready_ ? (tab = "Sugestões") : act(() => core.enrich(n)))}
+          title={ready_ ? "Ver sugestão" : busy ? "A IA está preparando a proposta" : core.hasAi ? "Enriquecer com IA (uma chamada)" : "Informe a API key em Configurações › Mesa"}
+          onclick={() => (ready_ ? showSuggestion(n) : act(() => core.enrich(n)))}
         >
-          <Icon name="zap" size={12} /> {busy ? "Gerando…" : ready_ ? "Ver sugestão" : "Enriquecer"}
+          <Icon name="zap" size={14} />
         </button>
       {/if}
-      <button class="btn-ghost sm" onclick={() => onopen(n.path, true)}>Abrir nota</button>
-      {#if !n.data.archived}<button class="btn-ghost sm mesa-archive" onclick={() => act(() => core.archive(n))}>Arquivar</button>{/if}
+      <button class="icon-btn sm" title="Abrir nota" onclick={() => onopen(n.path, true)}><Icon name="external" size={14} /></button>
+      {#if n.data.archived}
+        <button class="icon-btn sm" title="Restaurar" onclick={() => act(() => core.archive(n, false))}><Icon name="undo" size={14} /></button>
+      {:else}
+        <button class="icon-btn sm" title="Arquivar" onclick={() => act(() => core.archive(n))}><Icon name="archive" size={14} /></button>
+      {/if}
     </div>
   </div>
 {/snippet}
@@ -261,7 +351,15 @@
   {#if !ready}
     <div class="mesa-muted">Carregando a Mesa…</div>
   {:else if tab === "Mesa"}
-    <h3>Hoje · {today()}</h3>
+    {#if pinned.length}
+      <h3><Icon name="pin" size={13} /> Fixadas</h3>
+      <div class="mesa-list">{#each pinned as n (n.data.id)}{@render card(n, planned.includes(n.data.id) ? true : selected.includes(n) ? "cal" : false, "pinned", pinned)}{/each}</div>
+    {/if}
+    {#if fresh.length}
+      <h3>Novas</h3>
+      <div class="mesa-list">{#each fresh as n (n.data.id)}{@render card(n)}{/each}</div>
+    {/if}
+    <h3>Hoje · {fmtDate(today())}</h3>
     {#if !selected.length}
       <p>{planned.length ? "O que você planejou já foi encerrado." : "Escolha uma entrega para começar. O restante pode esperar fora desta mesa."}</p>
       <div class="mesa-actions">
@@ -269,10 +367,14 @@
         <button class="btn-ghost" onclick={() => act(() => core.plan([], true))}>Hoje sem tarefas</button>
       </div>
     {/if}
-    {#each selected as n (n.data.id)}{@render card(n, planned.includes(n.data.id) ? true : "cal")}{/each}
+    {#if todayList.length}
+      <div class="mesa-list">{#each todayList as n (n.data.id)}{@render card(n, planned.includes(n.data.id) ? true : "cal", "today", todayList)}{/each}</div>
+    {:else if selected.length}
+      <p class="mesa-muted">As tarefas de hoje estão em Fixadas.</p>
+    {/if}
     {#if planned.length}<button class="btn-ghost sm" onclick={() => act(() => core.clearToday())}>Limpar planejamento de hoje</button>{/if}
     <h3>Próximos passos disponíveis</h3>
-    {#each nextUp as n (n.data.id)}{@render card(n)}{/each}
+    <div class="mesa-list">{#each nextUp as n (n.data.id)}{@render card(n)}{/each}</div>
     <p class="mesa-muted">{tasks.filter((n) => n.data.state === "pending").length} pendências guardadas. Veja todas em Pendências.</p>
   {:else if tab === "Projetos"}
     {@const t0 = today()}
@@ -343,13 +445,13 @@
         </label>
       {/if}
     </div>
-    {#each filtered as n (n.data.id)}{@render card(n)}{:else}<p>Nenhuma tarefa nesta seleção.</p>{/each}
+    <div class="mesa-list">{#each filtered as n (n.data.id)}{@render card(n)}{:else}<p>Nenhuma tarefa nesta seleção.</p>{/each}</div>
   {:else if tab === "Calendário"}
     <Calendar {core} {tasks} {projects} onedit={(n) => (form = { type: "task", task: n })} onchanged={load} />
   {:else if tab === "Sugestões"}
     <div class="mesa-sugg-bar mesa-muted"><Icon name="zap" size={13} /> Enriquecimento só sob demanda: use o botão Enriquecer em cada tarefa.</div>
     {#each suggestions as s (s.data.id)}
-      <div class="mesa-card">
+      <div class="mesa-card" id="mesa-sugg-{s.data.id}" class:is-focus={focusSugg === s.data.id}>
         <h4>{s.data.title}</h4>
         <p>{s.body}</p>
         {#if s.data.type === "enrich"}
@@ -409,5 +511,5 @@
 </div>
 
 {#if form}
-  <Forms {core} {form} {projects} onclose={() => (form = null)} onsaved={load} {onopenlink} />
+  <Forms {core} {form} {projects} onclose={() => (form = null)} onsaved={created} {onopenlink} />
 {/if}

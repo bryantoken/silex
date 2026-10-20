@@ -34,7 +34,8 @@ Abrindo o mesmo cofre (909 notas) na mesma máquina, com o app parado: **244 MB 
 **Cofre**
 - Árvore de arquivos com arrastar e soltar e "Mover para…"
 - Busca de texto completo (Tantivy) com frases, proximidade, `OR`, exclusão e `title:`
-- Grafo de notas, abas com histórico, paleta de comandos (`Ctrl+P`) e troca rápida de arquivo (`Ctrl+O`)
+- Grafo de notas, abas com histórico (fixe abas e elas voltam ao reabrir o app), paleta de comandos (`Ctrl+P`) e troca rápida de arquivo (`Ctrl+O`)
+- Atalhos configuráveis: qualquer comando da paleta pode ganhar um atalho (Configurações › Atalhos)
 - Visualizadores de PDF, imagem, vídeo, áudio e planilhas; quadros Canvas e desenhos Excalidraw
 
 **Plugins nativos** (em Rust, ligados e desligados nas configurações)
@@ -69,7 +70,13 @@ As chaves de API ficam no cofre de credenciais do sistema (Gerenciador de Creden
 
 ## Instalação
 
-Baixe o instalador na página de [Releases](../../releases) (`.msi` ou `-setup.exe` para Windows).
+Baixe o instalador na página de [Releases](../../releases) (`-setup.exe` para Windows).
+
+### Atualizações
+
+Cada push na `main` gera uma Release (`.github/workflows/release.yml`), numerada como `0.1.<execução>`. O Silex instalado consulta a última Release ao abrir (e a cada 6 h) e mostra um aviso **Atualizar e reiniciar**; também dá para verificar pela paleta (`Verificar atualizações do Silex`). Pushes que só mudam documentação não geram versão.
+
+As atualizações são assinadas. A chave pública está em `src-tauri/tauri.conf.json`; a privada fica fora do repositório, no secret `TAURI_SIGNING_PRIVATE_KEY` do GitHub (a chave não tem senha). Para gerar um instalador localmente com `pnpm tauri build`, defina `TAURI_SIGNING_PRIVATE_KEY` (conteúdo ou caminho da chave) e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` vazio.
 
 ## Desenvolvimento
 
