@@ -1056,6 +1056,10 @@ mark.sx-highlight {
   padding: 0 22px 22px 0;
   cursor: default;
 }
+.sx-table-edit > .sx-table-wrap {
+  max-width: 100%;
+  cursor: default;
+}
 .sx-table-edit table {
   min-width: 0;
 }
@@ -1673,4 +1677,291 @@ body.sx-obsidian-theme .sx-app {
 }
 :root[data-theme="light"] .sx-dock-sep {
   background: rgb(0 0 0 / 0.1);
+}
+
+/* ---------- Fórmulas LaTeX (KaTeX) ---------- */
+
+.sx-math {
+  cursor: text;
+}
+.sx-math .katex {
+  font-size: 1.08em;
+}
+.sx-math.is-display {
+  display: block;
+  text-align: center;
+  margin: 4px 0;
+}
+.sx-math-src,
+.cm-line.sx-math-line {
+  font-family: var(--sx-font-mono);
+  font-size: 0.9em;
+  color: var(--sx-syntax-function);
+}
+.sx-math-block {
+  padding: 6px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+  cursor: text;
+}
+.sx-math-block .katex-display {
+  margin: 0.4em 0;
+}
+.sx-math-block.is-preview {
+  margin-top: 4px;
+  border-radius: var(--sx-radius-md);
+  background: var(--sx-surface);
+  border: 1px dashed var(--sx-border-strong);
+}
+.sx-math-empty {
+  color: var(--sx-text-faint);
+  font-size: 0.9em;
+}
+
+/* ---------- Mermaid ---------- */
+
+.sx-mermaid {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: var(--sx-radius-md);
+  border: 1px solid var(--sx-border);
+  background: var(--sx-surface);
+  cursor: text;
+}
+.sx-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.sx-mermaid.is-loading {
+  background: linear-gradient(90deg, var(--sx-surface) 0%, var(--sx-surface-hover) 50%, var(--sx-surface) 100%);
+  background-size: 200% 100%;
+  animation: sx-shimmer 1.2s linear infinite;
+}
+@keyframes sx-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ---------- Notas de rodapé ^[inline] ---------- */
+
+.sx-fn-ref {
+  display: inline-block;
+  padding: 0 1px;
+  margin-left: 1px;
+  font-size: 0.68em;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: super;
+  text-align: center;
+  color: var(--sx-accent-text);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.sx-fn-ref:hover {
+  background: var(--sx-accent-soft-strong);
+}
+.sx-fn-raw {
+  color: var(--sx-text-muted);
+  font-size: 0.92em;
+}
+.sx-footnotes {
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sx-border-strong);
+  font-size: 0.9em;
+  color: var(--sx-text-muted);
+}
+.sx-footnotes-title {
+  margin-bottom: 6px;
+  font-family: var(--sx-font-ui);
+  font-size: var(--sx-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sx-text-faint);
+}
+.sx-footnotes ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sx-footnotes li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  line-height: 1.55;
+}
+.sx-fn-num {
+  flex: none;
+  min-width: 1.6em;
+  padding: 0 4px;
+  font-size: 0.82em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sx-accent-text);
+  border-radius: 4px;
+  text-align: right;
+}
+.sx-fn-num:hover {
+  background: var(--sx-accent-soft-strong);
+}
+
+/* ---------- ![[#Seção]] embutida ---------- */
+
+.sx-section-embed {
+  display: block;
+  margin: 4px 0;
+  padding: 8px 14px 10px;
+  border-left: 3px solid var(--sx-border-strong);
+  border-radius: 0 var(--sx-radius-md) var(--sx-radius-md) 0;
+  background: var(--sx-surface);
+}
+.sx-section-embed-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--sx-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.sx-section-embed-body {
+  display: block;
+}
+.sx-section-embed-body > :first-child {
+  margin-top: 4px;
+}
+.sx-section-embed-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Retrair (folding) ---------- */
+
+.sx-fold {
+  position: absolute;
+  margin-left: -22px;
+  margin-top: 0.32em;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--sx-text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transform: rotate(90deg);
+  transition: opacity 120ms var(--sx-ease), transform 140ms var(--sx-ease), background 120ms var(--sx-ease);
+}
+.cm-line:hover > .sx-fold,
+.sx-fold.is-folded {
+  opacity: 1;
+}
+.sx-fold.is-folded {
+  transform: none;
+  color: var(--sx-text-muted);
+}
+.sx-fold:hover {
+  background: var(--sx-surface-hover);
+  color: var(--sx-text-strong);
+}
+.sx-fold-placeholder {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 8px;
+  line-height: 1.3;
+  border-radius: 999px;
+  color: var(--sx-text-muted);
+  background: var(--sx-surface-hover);
+  border: 1px solid var(--sx-border);
+  font-size: 0.8em;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.sx-fold-placeholder:hover {
+  color: var(--sx-text-strong);
+  background: var(--sx-surface-active);
+}
+
+/* ---------- Sumário (barra lateral) ---------- */
+
+.sx-outline {
+  padding: 2px 4px 12px;
+}
+.sx-outline-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 6px 6px;
+}
+.sx-outline-title {
+  flex: 1;
+  font-size: var(--sx-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sx-text-faint);
+}
+.sx-outline-empty {
+  padding: 8px 12px;
+  color: var(--sx-text-faint);
+  font-size: var(--sx-text-sm);
+}
+.sx-outline ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sx-outline ul ul {
+  margin-left: 9px;
+  padding-left: 4px;
+  border-left: 1px solid var(--sx-border);
+}
+.sx-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.sx-outline-chev {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--sx-text-faint);
+  transition: transform 120ms var(--sx-ease);
+}
+.sx-outline-chev.is-open {
+  transform: rotate(90deg);
+}
+.sx-outline-chev:not(.is-leaf):hover {
+  color: var(--sx-text-strong);
+  background: var(--sx-surface-hover);
+}
+.sx-outline-item {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: var(--sx-radius-sm);
+  font-size: var(--sx-text-md);
+  text-align: left;
+  color: var(--sx-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sx-outline-item[data-level="1"] {
+  color: var(--sx-text-strong);
+  font-weight: 600;
+}
+.sx-outline-item[data-level="2"] {
+  color: var(--sx-text);
+}
+.sx-outline-item:hover {
+  background: var(--sx-surface-hover);
+  color: var(--sx-text-strong);
 }

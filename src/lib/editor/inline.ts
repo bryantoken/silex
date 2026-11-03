@@ -10,9 +10,24 @@ import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate
 import { host, isRevealed, revealField, touches } from "./context";
 import { CALLOUT_HEADER, calloutKind } from "./callouts";
 import { TASK_LINE, taskStatus } from "./tasks";
-import { BulletWidget, CalloutTitleWidget, CheckboxWidget, CodeHeaderWidget, EmbedWidget, ImageWidget } from "./widgets";
+import {
+  BulletWidget,
+  CalloutTitleWidget,
+  CheckboxWidget,
+  CodeHeaderWidget,
+  EmbedWidget,
+  FootnoteRefWidget,
+  ImageWidget,
+  MathWidget,
+  SectionEmbedWidget,
+} from "./widgets";
+import { mathSource } from "../markdown/math";
+import { splitLink } from "../markdown/links";
+import { footnoteNumber } from "./footnotes";
 
-const WIKI = /(!?)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/g;
+// Alvo vazio vale para links na própria nota: [[#Cabeçalho]] e ![[#Cabeçalho]]
+const WIKI = /(!?)\[\[([^\]|#\n]*)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/g;
+const NOT_LINKABLE = new Set(["InlineCode", "FencedCode", "CodeBlock", "Frontmatter", "InlineMath", "BlockMath"]);
 const HIDDEN_MARKS = new Set(["EmphasisMark", "StrikethroughMark", "HighlightMark", "CodeMark"]);
 const HEADING_LINE: Record<string, string> = {
   ATXHeading1: "sx-h1",
@@ -30,7 +45,9 @@ const bullet = Decoration.replace({ widget: new BulletWidget() });
 
 /** Linguagens de bloco renderizadas por blocks.ts (não recebem cabeçalho de código). */
 export function isRenderedLang(state: EditorState, lang: string) {
-  return lang === "rustview" || lang === "dataview" || lang === "dataviewjs" || host(state).blockLangs().has(lang);
+  return (
+    lang === "rustview" || lang === "mermaid" || lang === "dataview" || lang === "dataviewjs" || host(state).blockLangs().has(lang)
+  );
 }
 
 export function codeLang(state: EditorState, node: { node: { getChild(n: string): { from: number; to: number } | null } }) {
@@ -51,6 +68,7 @@ function build(view: EditorView): DecorationSet {
   // Trechos que outro mecanismo já substitui (tabelas e blocos renderizados)
   const covered: [number, number][] = [];
   const isCovered = (a: number, b: number) => covered.some(([f, t]) => a < t && b > f);
+  let localText: string | null = null;
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -89,6 +107,41 @@ function build(view: EditorView): DecorationSet {
         }
 
         if (name === "Table") {
+          covered.push([node.from, node.to]);
+          return false;
+        }
+
+        // $$ bloco $$: renderizado por blocks.ts; em edição, o LaTeX em fonte monoespaçada
+        if (name === "BlockMath") {
+          if (revealed(node.from, node.to)) {
+            const last = doc.lineAt(node.to).number;
+            for (let n = doc.lineAt(node.from).number; n <= last; n++) lineDeco(doc.line(n).from, "sx-math-line");
+          }
+          covered.push([node.from, node.to]);
+          return false;
+        }
+
+        if (name === "InlineMath") {
+          if (revealed(node.from, node.to)) {
+            decos.push(Decoration.mark({ class: "sx-math-src" }).range(node.from, node.to));
+          } else {
+            const { tex, display } = mathSource(doc.sliceString(node.from, node.to));
+            decos.push(Decoration.replace({ widget: new MathWidget(tex, display) }).range(node.from, node.to));
+          }
+          covered.push([node.from, node.to]);
+          return false;
+        }
+
+        // texto^[nota] vira o número da nota; a lista fica no fim da página (blocks.ts)
+        if (name === "InlineFootnote") {
+          if (revealed(node.from, node.to)) {
+            decos.push(Decoration.mark({ class: "sx-fn-raw" }).range(node.from, node.to));
+            return;
+          }
+          const text = doc.sliceString(node.from + 2, node.to - 1).trim();
+          decos.push(
+            Decoration.replace({ widget: new FootnoteRefWidget(footnoteNumber(state, node.from), text) }).range(node.from, node.to),
+          );
           covered.push([node.from, node.to]);
           return false;
         }
@@ -236,17 +289,24 @@ function build(view: EditorView): DecorationSet {
       const ctx = syntaxTree(state).resolveInner(start, 1);
       let inCode = false;
       for (let n: typeof ctx | null = ctx; n; n = n.parent) {
-        if (n.name === "InlineCode" || n.name === "FencedCode" || n.name === "CodeBlock" || n.name === "Frontmatter") inCode = true;
+        if (NOT_LINKABLE.has(n.name)) inCode = true;
       }
       if (inCode) continue;
 
       const embed = m[1] === "!";
-      const target = m[2].trim();
+      const file = m[2].trim();
+      if (!file && !splitLink(m[3] ?? "").heading) continue; // [[]] e [[#]]
+      const target = file + (m[3] ?? "");
       const alias = m[4];
       const open = !revealed(start, end);
 
       if (embed) {
-        if (open) {
+        const { heading } = splitLink(target);
+        if (open && heading) {
+          // ![[#Seção]] / ![[Nota#Seção]]: mostra o conteúdo da seção
+          localText ??= doc.toString();
+          decos.push(Decoration.replace({ widget: new SectionEmbedWidget(file, heading, file ? null : localText) }).range(start, end));
+        } else if (open) {
           const size = alias && /^\d+(x\d+)?$/.test(alias.trim()) ? alias.trim() : "";
           decos.push(Decoration.replace({ widget: new EmbedWidget(target, size) }).range(start, end));
         } else {
@@ -255,7 +315,8 @@ function build(view: EditorView): DecorationSet {
         continue;
       }
 
-      const labelStart = alias ? end - 2 - alias.length : start + 2;
+      // Sem apelido, [[#A#B]] mostra só "B"; [[Nota#B]] mostra "Nota#B"
+      const labelStart = alias ? end - 2 - alias.length : file ? start + 2 : start + 2 + m[3]!.lastIndexOf("#") + 1;
       const labelEnd = end - 2;
       if (open) {
         decos.push(hide.range(start, labelStart));

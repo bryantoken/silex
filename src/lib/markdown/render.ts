@@ -5,6 +5,8 @@
  */
 import { Marked, type TokenizerAndRendererExtension } from "marked";
 import DOMPurify from "dompurify";
+import { linkLabel } from "./links";
+import { renderMath } from "./math";
 
 const escape = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -14,9 +16,10 @@ const wikilink: TokenizerAndRendererExtension = {
   level: "inline",
   start: (src) => src.indexOf("[["),
   tokenizer(src) {
-    const m = /^!?\[\[([^\]|#\n]+)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/.exec(src);
-    if (!m) return;
-    return { type: "wikilink", raw: m[0], target: m[1].trim(), label: (m[3] ?? m[1]).trim() };
+    const m = /^!?\[\[([^\]|#\n]*)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/.exec(src);
+    if (!m || (!m[1].trim() && !m[2])) return;
+    const target = m[1].trim() + (m[2] ?? "");
+    return { type: "wikilink", raw: m[0], target, label: (m[3] ?? linkLabel(target)).trim() };
   },
   renderer: (tok) => `<a class="sx-wikilink" data-target="${escape(tok.target)}">${escape(tok.label)}</a>`,
 };
@@ -35,7 +38,32 @@ const highlight: TokenizerAndRendererExtension = {
   },
 };
 
-const marked = new Marked({ gfm: true, breaks: false, extensions: [wikilink, highlight] });
+const math: TokenizerAndRendererExtension = {
+  name: "math",
+  level: "inline",
+  start: (src) => src.indexOf("$"),
+  tokenizer(src) {
+    const m = /^\$\$([^$]+?)\$\$/.exec(src) ?? /^\$(?![\s$])((?:\\.|[^$\\\n])*?[^\s\\])\$(?!\d)/.exec(src);
+    if (!m) return;
+    return { type: "math", raw: m[0], text: m[1], display: m[0].startsWith("$$") };
+  },
+  renderer: (tok) => renderMath(tok.text, tok.display),
+};
+
+/** ^[nota inline]: fora do editor vira só um marcador discreto com o texto no título. */
+const footnote: TokenizerAndRendererExtension = {
+  name: "inlineFootnote",
+  level: "inline",
+  start: (src) => src.indexOf("^["),
+  tokenizer(src) {
+    const m = /^\^\[((?:[^[\]]|\[[^\]]*\])+)\]/.exec(src);
+    if (!m) return;
+    return { type: "inlineFootnote", raw: m[0], text: m[1] };
+  },
+  renderer: (tok) => `<sup class="sx-fn-ref" title="${escape(tok.text)}">*</sup>`,
+};
+
+const marked = new Marked({ gfm: true, breaks: false, extensions: [wikilink, highlight, math, footnote] });
 
 const PURIFY = { ADD_ATTR: ["data-target", "target"], FORBID_TAGS: ["style", "form", "input"] };
 

@@ -204,6 +204,7 @@
           <div><div class="name">Tema</div><div class="desc">Temas ficam em <code>.silex/themes</code>. Temas CSS do Obsidian colocados lá também aplicam as cores e as fontes deles.</div></div>
           <select value={config.theme} onchange={(e) => set("theme", e.currentTarget.value)}>
             <option value="">Silex (padrão)</option>
+            <option value="@velocity">Velocity (vidro líquido)</option>
             {#each appearance.themes as t}<option value={t}>{t}</option>{/each}
           </select>
         </div>

@@ -15,6 +15,7 @@
   import "./styles/silex.css";
   import "./styles/components.css";
   import "./styles/plugins.css";
+  import "./styles/velocity.css";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { openFile as openDialog } from "./lib/dialogs";
   import { openUrl, openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -53,6 +54,10 @@
   import PromptModal, { type TplPrompt } from "./lib/components/PromptModal.svelte";
   import FormatDock from "./lib/components/FormatDock.svelte";
   import ExportModal from "./lib/components/ExportModal.svelte";
+  import Outline from "./lib/components/Outline.svelte";
+  import { splitLink } from "./lib/markdown/links";
+  import { findHeading } from "./lib/markdown/headings";
+  import { revealPos, toggleFoldAt } from "./lib/editor/folding";
   import ChatPanel, { type ChatSettings } from "./lib/plugins/ChatPanel.svelte";
   import { chatStore } from "./lib/plugins/chat.svelte";
   import type { LinkTarget } from "./lib/editor/context";
@@ -114,7 +119,7 @@
   let saving = $state(false);
   let toast = $state<{ text: string; error: boolean } | null>(null);
 
-  let panel = $state<"files" | "search">("files");
+  let panel = $state<"files" | "search" | "outline">("files");
   let sidebarOpen = $state(true);
   let sidebarWidth = $state(272);
   let palette = $state<"commands" | "files" | null>(null);
@@ -887,14 +892,35 @@
 
   async function followLink(target: string, newTab: boolean) {
     if (!tree) return;
-    const clean = target.split("#")[0].trim();
-    if (!clean) return;
+    // [[Nota#Cabeçalho]] abre a nota e rola até o cabeçalho; [[#Cabeçalho]] fica na mesma nota
+    const { file, heading } = splitLink(target);
+    if (!file) {
+      if (heading) goToHeading(heading);
+      return;
+    }
     try {
-      const path = resolveFile(clean) ?? (await createNote(tree.path, baseName(clean)));
+      const path = resolveFile(file) ?? (await createNote(tree.path, baseName(file)));
       await openFile(path, newTab);
+      if (heading) {
+        await tick();
+        requestAnimationFrame(() => goToHeading(heading));
+      }
     } catch (e) {
       fail(e);
     }
+  }
+
+  function goToHeading(heading: string) {
+    const v = view();
+    if (!v) return;
+    const h = findHeading(v.state.doc.toString(), heading);
+    if (h) revealPos(v, h.from);
+    else notify(`Cabeçalho “${heading}” não encontrado`, true);
+  }
+
+  async function openOutline() {
+    sidebarOpen = true;
+    panel = "outline";
   }
 
   // ---------- Busca ----------
@@ -1136,6 +1162,7 @@
         })),
       ),
     linkTargets: (embed) => (embed ? linkTargets.all : linkTargets.notes),
+    readNote: (p) => (docs[p] ? Promise.resolve(docs[p].content) : invoke<string>("read_note", { filePath: p }).catch(() => null)),
     saveImage: async (data, ext) => {
       const note = activePath;
       if (!note || activeKind !== "markdown") return null;
@@ -1346,6 +1373,11 @@
         } },
       { id: "source", title: livePreview ? "Mudar para modo fonte (Markdown cru)" : "Mudar para visualização ao vivo", hotkey: "Ctrl+E", icon: "code", when: hasNote, run: () => (livePreview = !livePreview) },
       { id: "sidebar", title: "Alternar barra lateral", hotkey: "Ctrl+B", icon: "sidebar", run: () => (sidebarOpen = !sidebarOpen) },
+      { id: "outline", title: "Mostrar sumário da nota", hotkey: "Ctrl+Shift+U", icon: "list", when: hasNote, run: openOutline },
+      { id: "fold.toggle", title: "Retrair/expandir seção ou lista no cursor", icon: "collapse", when: hasNote, run: () => {
+          const v = view();
+          if (v) toggleFoldAt(v, v.state.selection.main.head);
+        } },
       { id: "tab.new", title: "Nova aba", hotkey: "Ctrl+T", icon: "plus", run: newTab },
       { id: "tab.close", title: "Fechar aba", hotkey: "Ctrl+W", icon: "x", run: () => closeTab(activeId) },
       { id: "tab.reopen", title: "Reabrir aba fechada", hotkey: "Ctrl+Shift+T", icon: "undo", run: reopenTab },
@@ -1717,6 +1749,7 @@
           <div class="sx-segmented" role="tablist">
             <button role="tab" aria-selected={panel === "files"} class:is-on={panel === "files"} onclick={() => (panel = "files")}>Arquivos</button>
             <button role="tab" aria-selected={panel === "search"} class:is-on={panel === "search"} onclick={openSearch}>Busca</button>
+            <button role="tab" aria-selected={panel === "outline"} class:is-on={panel === "outline"} onclick={openOutline}>Sumário</button>
           </div>
         </div>
 
@@ -1757,6 +1790,21 @@
             ondrop={(e) => tree && onTreeDrop(e, tree.path)}
           >
             {@render treeItems(tree.children)}
+          </div>
+        {:else if panel === "outline"}
+          <div class="sx-sidebar-body">
+            {#if activePath && activeDoc}
+              <Outline
+                content={activeDoc.content}
+                path={activePath}
+                onjump={(h) => {
+                  const v = view();
+                  if (v) revealPos(v, Math.min(h.from, v.state.doc.length));
+                }}
+              />
+            {:else}
+              <p class="sx-outline-empty">Abra uma nota para ver o sumário.</p>
+            {/if}
           </div>
         {:else}
           <div class="sx-search-box">

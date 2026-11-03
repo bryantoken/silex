@@ -9,7 +9,9 @@
   import { languages } from "@codemirror/language-data";
   import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
   import { invoke } from "@tauri-apps/api/core";
-  import { Highlight } from "../markdown/extensions";
+  import { Highlight, InlineFootnoteSyntax, MathSyntax } from "../markdown/extensions";
+  import { parseHeadings } from "../markdown/headings";
+  import { folding } from "./folding";
   import { hostFacet, revealExtensions, type EditorHost } from "./context";
   import { inlinePreview } from "./inline";
   import { blockPreview } from "./blocks";
@@ -45,7 +47,43 @@
     taskMenu: (v, p) => bridge?.host.taskMenu(v, p),
     linkTargets: (e) => bridge?.host.linkTargets(e) ?? [],
     saveImage: (d, x) => bridge?.host.saveImage(d, x) ?? Promise.resolve(null),
+    readNote: (p) => bridge?.host.readNote(p) ?? Promise.resolve(null),
   };
+
+  /** [[#  e  ![[#  sugerem os cabeçalhos da nota atual; [[Nota#  os daquela nota. */
+  async function headingCompletions(ctx: CompletionContext): Promise<CompletionResult | null> {
+    const m = ctx.matchBefore(/!?\[\[[^[\]\n|#]*#[^[\]\n|]*$/);
+    if (!m) return null;
+    const open = m.text.indexOf("[[") + 2;
+    const hash = m.text.indexOf("#", open);
+    const file = m.text.slice(open, hash).trim();
+    const from = m.from + m.text.lastIndexOf("#") + 1;
+    let md: string | null;
+    if (!file) md = ctx.state.doc.toString();
+    else {
+      const path = editorHost.resolveFile(file);
+      md = path ? await editorHost.readNote(path) : null;
+    }
+    if (md === null || ctx.aborted) return null;
+    const close = ctx.state.sliceDoc(ctx.pos, ctx.pos + 2) === "]]" ? 2 : 0;
+    // Não sugere o próprio cabeçalho que está sendo escrito
+    const here = ctx.state.doc.lineAt(ctx.pos).from;
+    return {
+      from,
+      validFor: /^[^[\]\n|#]*$/,
+      options: parseHeadings(md)
+        .filter((h) => file || h.from !== here)
+        .map((h, i) => ({
+          label: h.text,
+          detail: "H" + h.level,
+          boost: -i / 1000,
+          apply: (view: EditorView, _c: unknown, f: number, to: number) => {
+            const insert = `${h.text}]]`;
+            view.dispatch({ changes: { from: f, to: to + close, insert }, selection: { anchor: f + insert.length } });
+          },
+        })),
+    };
+  }
 
   /** [[ sugere notas e ![[ sugere qualquer arquivo; filtra (fuzzy) conforme se digita. */
   function wikiCompletions(ctx: CompletionContext): CompletionResult | null {
@@ -96,12 +134,17 @@
     EditorView.lineWrapping,
     placeholder("Comece a escrever…"),
     yamlFrontmatter({
-      content: markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight] }),
+      content: markdown({
+        base: markdownLanguage,
+        codeLanguages: languages,
+        extensions: [Highlight, MathSyntax, InlineFootnoteSyntax],
+      }),
     }),
     syntaxHighlighting(silexHighlight),
     silexEditorTheme,
     revealExtensions,
-    autocompletion({ override: [wikiCompletions], icons: false, maxRenderedOptions: 50 }),
+    folding,
+    autocompletion({ override: [headingCompletions, wikiCompletions], icons: false, maxRenderedOptions: 50 }),
     keymap.of([
       // Ctrl+L (alternar tarefa) e Ctrl+Shift+↑/↓ (mover linhas) são comandos do app,
       // com atalho configurável; Ctrl+Enter fica como alternativa fixa

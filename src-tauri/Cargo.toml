@@ -1,6 +1,6 @@
 [package]
 name = "silex"
-version = "0.1.0"
+version = "0.2.0"
 description = "Silex: editor de notas em Markdown, rápido e leve, feito em Rust"
 authors = ["Bryan Zucolotto Borges"]
 license = "PolyForm-Noncommercial-1.0.0"

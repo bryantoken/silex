@@ -8,7 +8,19 @@ import { EditorState, type Range } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { isRevealed, revealField } from "./context";
 import { codeLang, isRenderedLang } from "./inline";
-import { BlockOutputWidget, frontmatterRange, frontmatterRangeIn, NoticeWidget, PropertiesWidget, TableWidget } from "./widgets";
+import {
+  BlockOutputWidget,
+  FootnotesWidget,
+  frontmatterRange,
+  frontmatterRangeIn,
+  MathBlockWidget,
+  MermaidWidget,
+  NoticeWidget,
+  PropertiesWidget,
+  TableWidget,
+} from "./widgets";
+import { mathSource } from "../markdown/math";
+import { collectFootnotes } from "./footnotes";
 
 function build(state: EditorState) {
   const doc = state.doc;
@@ -41,6 +53,20 @@ function build(state: EditorState) {
         return false;
       }
 
+      if (node.name === "BlockMath") {
+        const first = doc.lineAt(node.from);
+        const last = doc.lineAt(node.to);
+        // Dentro de citações/callouts as linhas trazem o "> " na frente
+        const raw = doc.sliceString(first.from, last.to).replace(/^[ \t]*(?:>[ \t]?)+/gm, "");
+        const { tex } = mathSource(raw);
+        decos.push(
+          isRevealed(state, node.from, node.to)
+            ? Decoration.widget({ widget: new MathBlockWidget(tex, true), block: true, side: 1 }).range(last.to)
+            : Decoration.replace({ widget: new MathBlockWidget(tex, false), block: true }).range(first.from, last.to),
+        );
+        return false;
+      }
+
       if (node.name === "FencedCode") {
         const lang = codeLang(state, node);
         if (!isRenderedLang(state, lang)) return false;
@@ -49,6 +75,15 @@ function build(state: EditorState) {
         const closed = last.number > first.number && /^\s*(```|~~~)/.test(last.text);
         const source = doc.sliceString(Math.min(first.to + 1, doc.length), closed ? Math.max(first.to, last.from - 1) : node.to);
         const revealed = isRevealed(state, node.from, node.to);
+
+        if (lang === "mermaid") {
+          decos.push(
+            revealed
+              ? Decoration.widget({ widget: new MermaidWidget(source, true), block: true, side: 1 }).range(last.to)
+              : Decoration.replace({ widget: new MermaidWidget(source, false), block: true }).range(first.from, last.to),
+          );
+          return false;
+        }
 
         if (lang === "dataview" || lang === "dataviewjs") {
           if (!revealed) {
@@ -74,6 +109,12 @@ function build(state: EditorState) {
       }
     },
   });
+
+  // Notas de rodapé ^[inline] numeradas no fim da página
+  const notes = collectFootnotes(state, tree);
+  if (notes.length) {
+    decos.push(Decoration.widget({ widget: new FootnotesWidget(notes), block: true, side: 1 }).range(doc.length));
+  }
 
   return Decoration.set(decos, true);
 }

@@ -12,6 +12,8 @@ function styleTag(id: string) {
   return el;
 }
 
+export const BUILTIN_VELOCITY = "@velocity";
+
 const systemDark = typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 let scheme: VaultConfig["color_scheme"] = "dark";
 
@@ -32,8 +34,13 @@ export async function applyAppearance(cfg: VaultConfig) {
   root.style.setProperty("--sx-editor-size", `${cfg.font_size}px`);
   root.style.setProperty("--sx-line-width", cfg.readable_line_width ? `${cfg.line_width}px` : "100%");
 
+  // Temas embutidos começam com "@" (não são arquivos em .silex/themes)
+  root.dataset.style = cfg.theme === BUILTIN_VELOCITY ? "velocity" : "";
+  try {
+    localStorage.setItem("silex.style", root.dataset.style);
+  } catch {}
   let themeCss = "";
-  if (cfg.theme) {
+  if (cfg.theme && !cfg.theme.startsWith("@")) {
     themeCss = await invoke<string>("read_css", { kind: "theme", name: cfg.theme }).catch(() => "");
   }
   styleTag("sx-theme").textContent = themeCss;

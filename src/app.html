@@ -10,6 +10,7 @@
       try {
         var s = localStorage.getItem("silex.scheme") || "dark";
         document.documentElement.dataset.theme = s === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : s;
+        document.documentElement.dataset.style = localStorage.getItem("silex.style") || "";
       } catch (e) {}
     </script>
     %sveltekit.head%

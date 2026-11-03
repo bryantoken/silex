@@ -1,0 +1,161 @@
+/*
+ * Tema Velocity: vidro líquido no estilo do iOS.
+ * Painéis translúcidos com desfoque e saturação sobre um fundo de aurora,
+ * bordas de luz, cantos mais redondos e acento colorido (o matiz de
+ * Configurações › Aparência). Ligado por data-style="velocity" no <html>,
+ * vale para o modo escuro e para o claro.
+ */
+
+:root[data-style="velocity"] {
+  --sx-glass-rgb: 22 24 34;
+  --sx-glass-alpha: 0.5;
+  --sx-glass-strong: rgb(24 26 38 / 0.72);
+  --sx-glass-edge: rgb(255 255 255 / 0.14);
+  --sx-glass-shine: rgb(255 255 255 / 0.1);
+  --sx-glass-blur: blur(28px) saturate(185%);
+
+  --sx-chrome: #07080f;
+  --sx-bg: rgb(18 20 30 / 0.58);
+  --sx-surface: rgb(255 255 255 / 0.05);
+  --sx-surface-raised: rgb(32 34 48 / 0.78);
+  --sx-surface-sunken: rgb(0 0 0 / 0.22);
+  --sx-surface-hover: rgb(255 255 255 / 0.07);
+  --sx-surface-active: rgb(255 255 255 / 0.12);
+  --sx-border: rgb(255 255 255 / 0.09);
+  --sx-border-strong: rgb(255 255 255 / 0.16);
+
+  --sx-accent: hsl(var(--sx-accent-h) 95% 68%);
+  --sx-accent-hover: hsl(var(--sx-accent-h) 95% 74%);
+  --sx-accent-text: hsl(var(--sx-accent-h) 100% 78%);
+  --sx-accent-soft: hsl(var(--sx-accent-h) 95% 65% / 0.14);
+  --sx-accent-soft-strong: hsl(var(--sx-accent-h) 95% 65% / 0.24);
+  --sx-on-accent: #fff;
+
+  --sx-radius-sm: 9px;
+  --sx-radius-md: 14px;
+  --sx-radius-lg: 22px;
+  --sx-gap: 8px;
+  --sx-shadow-canvas: 0 0 0 1px var(--sx-glass-edge), inset 0 1px 0 var(--sx-glass-shine), 0 24px 60px rgb(0 0 0 / 0.35);
+  --sx-shadow-pop: 0 0 0 1px var(--sx-glass-edge), inset 0 1px 0 var(--sx-glass-shine), 0 12px 32px rgb(0 0 0 / 0.35);
+
+  --sx-aurora:
+    radial-gradient(60vmax 50vmax at 8% 0%, hsl(calc(var(--sx-accent-h) + 10) 90% 45% / 0.55), transparent 60%),
+    radial-gradient(55vmax 45vmax at 100% 10%, hsl(calc(var(--sx-accent-h) + 70) 85% 50% / 0.42), transparent 60%),
+    radial-gradient(60vmax 50vmax at 70% 110%, hsl(calc(var(--sx-accent-h) - 50) 85% 45% / 0.45), transparent 60%),
+    radial-gradient(40vmax 40vmax at 0% 100%, hsl(calc(var(--sx-accent-h) + 140) 70% 45% / 0.3), transparent 60%),
+    #07080f;
+}
+
+:root[data-style="velocity"][data-theme="light"] {
+  --sx-glass-rgb: 255 255 255;
+  --sx-glass-strong: rgb(255 255 255 / 0.78);
+  --sx-glass-edge: rgb(255 255 255 / 0.7);
+  --sx-glass-shine: rgb(255 255 255 / 0.9);
+
+  --sx-chrome: #eef1f8;
+  --sx-bg: rgb(255 255 255 / 0.6);
+  --sx-surface: rgb(255 255 255 / 0.45);
+  --sx-surface-raised: rgb(255 255 255 / 0.82);
+  --sx-surface-sunken: rgb(0 0 0 / 0.04);
+  --sx-surface-hover: rgb(0 0 0 / 0.05);
+  --sx-surface-active: rgb(0 0 0 / 0.09);
+  --sx-border: rgb(0 0 0 / 0.07);
+  --sx-border-strong: rgb(0 0 0 / 0.12);
+
+  --sx-accent: hsl(var(--sx-accent-h) 90% 50%);
+  --sx-accent-hover: hsl(var(--sx-accent-h) 90% 44%);
+  --sx-accent-text: hsl(var(--sx-accent-h) 85% 40%);
+  --sx-accent-soft: hsl(var(--sx-accent-h) 90% 50% / 0.1);
+  --sx-accent-soft-strong: hsl(var(--sx-accent-h) 90% 50% / 0.18);
+
+  --sx-shadow-canvas: 0 0 0 1px var(--sx-glass-edge), inset 0 1px 0 var(--sx-glass-shine), 0 20px 50px rgb(40 50 90 / 0.14);
+  --sx-shadow-pop: 0 0 0 1px rgb(0 0 0 / 0.06), inset 0 1px 0 var(--sx-glass-shine), 0 12px 32px rgb(40 50 90 / 0.16);
+
+  --sx-aurora:
+    radial-gradient(60vmax 50vmax at 8% 0%, hsl(calc(var(--sx-accent-h) + 10) 95% 75% / 0.7), transparent 60%),
+    radial-gradient(55vmax 45vmax at 100% 10%, hsl(calc(var(--sx-accent-h) + 70) 90% 80% / 0.6), transparent 60%),
+    radial-gradient(60vmax 50vmax at 70% 110%, hsl(calc(var(--sx-accent-h) - 50) 90% 78% / 0.65), transparent 60%),
+    radial-gradient(40vmax 40vmax at 0% 100%, hsl(calc(var(--sx-accent-h) + 140) 80% 80% / 0.5), transparent 60%),
+    #eef1f8;
+}
+
+/* Fundo de aurora atrás de tudo */
+:root[data-style="velocity"] body {
+  background: var(--sx-aurora);
+  background-attachment: fixed;
+}
+:root[data-style="velocity"] .sx-app {
+  background: transparent;
+}
+
+/* Painéis de vidro: barra lateral, canvas, abas */
+:root[data-style="velocity"] .sx-sidebar {
+  margin: var(--sx-gap) 0 var(--sx-gap) 0;
+  padding: 2px 0 var(--sx-gap);
+  border-radius: var(--sx-radius-lg);
+  background: rgb(var(--sx-glass-rgb) / 0.38);
+  backdrop-filter: var(--sx-glass-blur);
+  -webkit-backdrop-filter: var(--sx-glass-blur);
+  box-shadow: var(--sx-shadow-canvas);
+}
+:root[data-style="velocity"] .sx-canvas {
+  background: var(--sx-bg);
+  backdrop-filter: var(--sx-glass-blur);
+  -webkit-backdrop-filter: var(--sx-glass-blur);
+}
+:root[data-style="velocity"] .sx-tab.is-active {
+  background: rgb(var(--sx-glass-rgb) / 0.55);
+  backdrop-filter: var(--sx-glass-blur);
+  -webkit-backdrop-filter: var(--sx-glass-blur);
+}
+:root[data-style="velocity"] .sx-rail .icon-btn.is-on {
+  background: rgb(var(--sx-glass-rgb) / 0.55);
+  box-shadow: var(--sx-shadow-pop);
+  color: var(--sx-text-strong);
+}
+
+/* Pop-ups (menus, paleta, configurações, sugestões) também em vidro */
+:root[data-style="velocity"] .sx-menu,
+:root[data-style="velocity"] .sx-palette,
+:root[data-style="velocity"] .sx-settings,
+:root[data-style="velocity"] .sx-prompt,
+:root[data-style="velocity"] .cm-tooltip,
+:root[data-style="velocity"] .cm-panels {
+  background: var(--sx-glass-strong);
+  backdrop-filter: var(--sx-glass-blur);
+  -webkit-backdrop-filter: var(--sx-glass-blur);
+  border-color: var(--sx-glass-edge);
+  box-shadow: var(--sx-shadow-pop), 0 30px 80px rgb(0 0 0 / 0.3);
+}
+:root[data-style="velocity"] .sx-settings {
+  background: rgb(var(--sx-glass-rgb) / 0.82);
+}
+
+/* Blocos dentro da nota: vidro leve */
+:root[data-style="velocity"] .sx-block-out,
+:root[data-style="velocity"] .sx-mermaid,
+:root[data-style="velocity"] .sx-section-embed,
+:root[data-style="velocity"] .sx-props {
+  background: rgb(var(--sx-fg-rgb) / 0.04);
+  box-shadow: inset 0 1px 0 var(--sx-glass-shine);
+}
+:root[data-style="velocity"] .cm-line.sx-codeblock {
+  background: rgb(0 0 0 / 0.18);
+}
+:root[data-style="velocity"][data-theme="light"] .cm-line.sx-codeblock {
+  background: rgb(255 255 255 / 0.55);
+}
+
+/* Botões principais em pílula colorida */
+:root[data-style="velocity"] .btn-primary {
+  background: linear-gradient(180deg, var(--sx-accent-hover), var(--sx-accent));
+  color: var(--sx-on-accent);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), 0 6px 18px hsl(var(--sx-accent-h) 90% 50% / 0.35);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-style="velocity"] {
+    --sx-glass-blur: none;
+  }
+}

@@ -38,6 +38,8 @@ export interface EditorHost {
   linkTargets(embed: boolean): readonly LinkTarget[];
   /** Salva uma imagem colada como anexo e devolve o nome para o ![[embed]] */
   saveImage(data: Uint8Array, ext: string): Promise<string | null>;
+  /** Conteúdo de outra nota (![[Nota#Seção]] e [[Nota#autocompletar]]) */
+  readNote(path: string): Promise<string | null>;
 }
 
 export type LinkTarget = { label: string; link: string; detail: string };

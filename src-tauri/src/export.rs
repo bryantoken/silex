@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 static WIKI_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]").unwrap());
-static WIKI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]").unwrap());
+// [[Nota]], [[Nota#Cabeçalho]], [[#Cabeçalho|apelido]]: 1 = nota, 2 = cabeçalhos, 3 = apelido
+static WIKI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]").unwrap());
+// Nota de rodapé inline do Obsidian: texto^[nota] (aceita [colchetes] simples dentro)
+static INLINE_NOTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\^\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]").unwrap());
 static HIGHLIGHT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"==([^=\n]+)==").unwrap());
 static CALLOUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^([ \t]*>[ \t]*)\[!([\w-]+)\][+-]?[ \t]*(.*)$").unwrap());
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)%%.*?%%").unwrap());
@@ -90,13 +93,42 @@ fn preprocess(md: &str, root: &Path, inline_images: bool) -> String {
             _ => format!("*{}*", name),
         }
     });
-    let body = WIKI.replace_all(&body, |c: &regex::Captures| c.get(2).map(|m| m.as_str()).unwrap_or(&c[1]).trim().to_string());
+    let body = WIKI.replace_all(&body, |c: &regex::Captures| {
+        if let Some(alias) = c.get(3) {
+            return alias.as_str().trim().to_string();
+        }
+        let file = c[1].trim();
+        let heading = c.get(2).and_then(|h| h.as_str().split('#').map(str::trim).filter(|s| !s.is_empty()).last()).unwrap_or("");
+        match (file.is_empty(), heading.is_empty()) {
+            (_, true) => file.to_string(),
+            (true, false) => heading.to_string(),
+            (false, false) => format!("{file} › {heading}"),
+        }
+    });
     let body = HIGHLIGHT.replace_all(&body, "<mark>$1</mark>");
-    CALLOUT.replace_all(&body, |c: &regex::Captures| {
+    let body = CALLOUT.replace_all(&body, |c: &regex::Captures| {
         let title = if c[3].trim().is_empty() { capitalize(&c[2]) } else { c[3].trim().to_string() };
         format!("{}**{}**", &c[1], title)
-    })
-    .into_owned()
+    });
+    inline_footnotes(&body)
+}
+
+/// texto^[nota] vira texto[^n] com as definições "[^n]: nota" no fim (numeradas na ordem).
+fn inline_footnotes(body: &str) -> String {
+    let mut notes = Vec::new();
+    let out = INLINE_NOTE.replace_all(body, |c: &regex::Captures| {
+        notes.push(c[1].trim().to_string());
+        format!("[^sx{}]", notes.len())
+    });
+    if notes.is_empty() {
+        return out.into_owned();
+    }
+    let mut out = out.into_owned();
+    out.push_str("\n\n");
+    for (i, n) in notes.iter().enumerate() {
+        out.push_str(&format!("[^sx{}]: {}\n", i + 1, n));
+    }
+    out
 }
 
 fn capitalize(s: &str) -> String {
@@ -398,5 +430,15 @@ mod tests {
         to_docx(&dir, &note, &out).unwrap();
         assert!(fs::metadata(&out).unwrap().len() > 2000);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn links_para_cabecalho_e_notas_inline() {
+        let dir = std::env::temp_dir();
+        let md = "Ver [[#Exercícios#5ª Questão]] e [[#Topo|início]] e [[Outra#Parte]].\n\nIsso^[pesquisa de 2020] e aquilo^[fenômeno [x]].\n";
+        let out = preprocess(md, &dir, false);
+        assert!(out.contains("Ver 5ª Questão e início e Outra › Parte."), "{out}");
+        assert!(out.contains("Isso[^sx1] e aquilo[^sx2]"), "{out}");
+        assert!(out.contains("[^sx1]: pesquisa de 2020\n[^sx2]: fenômeno [x]\n"), "{out}");
     }
 }

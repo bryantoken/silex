@@ -2,7 +2,10 @@ import { EditorView, WidgetType } from "@codemirror/view";
 import type { EditorState, Text } from "@codemirror/state";
 import { parseDocument, isScalar, type Document } from "yaml";
 import { host, type BlockResult, type InlineNode, type ViewNode } from "./context";
-import { renderInline, safeColor } from "../markdown/render";
+import { renderBlock, renderInline, safeColor } from "../markdown/render";
+import { renderMath } from "../markdown/math";
+import { mermaidThemeKey, renderMermaid } from "../markdown/mermaid";
+import { sectionText } from "../markdown/headings";
 import { popupMenu } from "../menu";
 import { svgIcon } from "../icons";
 import { taskStatus, TASK_LINE } from "./tasks";
@@ -366,7 +369,15 @@ function paintTable(dom: TableDom) {
   const addCol = el("button", "sx-table-add is-col");
   addCol.title = "Adicionar coluna";
   addCol.append(svgIcon("plus", 12, 2.2));
-  (dom.firstElementChild as HTMLElement).replaceChildren(table, addRow, addCol);
+  // A tabela rola dentro de .sx-table-wrap; os botões "+" ficam fora da rolagem,
+  // presos às bordas visíveis (antes rolavam junto e sumiam em tabelas largas)
+  const box = dom.firstElementChild as HTMLElement;
+  const prev = box.querySelector<HTMLElement>(":scope > .sx-table-wrap");
+  const scroller = prev ?? el("div", "sx-table-wrap");
+  const left = scroller.scrollLeft;
+  scroller.replaceChildren(table);
+  box.replaceChildren(scroller, addRow, addCol);
+  scroller.scrollLeft = left;
   st.editing = null;
   st.painting = false;
 }
@@ -404,7 +415,7 @@ export class TableWidget extends WidgetType {
     return true;
   }
   toDOM(view: EditorView) {
-    const dom = shell(el("div", "sx-table-wrap sx-table-edit")) as TableDom;
+    const dom = shell(el("div", "sx-table-edit")) as TableDom;
     const st: TableState = { source: this.source, model: parseTable(this.source), editing: null, painting: false };
     dom._table = st;
     paintTable(dom);
@@ -805,6 +816,217 @@ export class NoticeWidget extends WidgetType {
     const dom = shell(box);
     clickToEdit(dom, view);
     return dom;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// ---------- Fórmulas (KaTeX) ----------
+
+export class MathWidget extends WidgetType {
+  constructor(
+    readonly tex: string,
+    readonly display: boolean,
+  ) {
+    super();
+  }
+  eq(other: MathWidget) {
+    return other.tex === this.tex && other.display === this.display;
+  }
+  toDOM() {
+    const span = el("span", this.display ? "sx-math is-display" : "sx-math");
+    span.innerHTML = renderMath(this.tex, this.display);
+    return span;
+  }
+  /** Clique na fórmula põe o cursor nela (e mostra o LaTeX para editar). */
+  ignoreEvent() {
+    return false;
+  }
+}
+
+export class MathBlockWidget extends WidgetType {
+  constructor(
+    readonly tex: string,
+    readonly preview: boolean,
+  ) {
+    super();
+  }
+  eq(other: MathBlockWidget) {
+    return other.tex === this.tex && other.preview === this.preview;
+  }
+  toDOM(view: EditorView) {
+    const box = el("div", this.preview ? "sx-math-block is-preview" : "sx-math-block");
+    if (this.tex.trim()) box.innerHTML = renderMath(this.tex, true);
+    else box.append(el("span", "sx-math-empty", "Fórmula vazia"));
+    const dom = shell(box);
+    if (!this.preview) clickToEdit(dom, view);
+    return dom;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// ---------- Diagramas Mermaid ----------
+
+const mermaidCache = new Map<string, { svg: string; height: number }>();
+
+export class MermaidWidget extends WidgetType {
+  constructor(
+    readonly source: string,
+    readonly preview: boolean,
+  ) {
+    super();
+  }
+  private get key() {
+    return `${mermaidThemeKey()}\n${this.source}`;
+  }
+  get estimatedHeight() {
+    return mermaidCache.get(this.key)?.height ?? 120;
+  }
+  eq(other: MermaidWidget) {
+    return other.source === this.source && other.preview === this.preview;
+  }
+  toDOM(view: EditorView) {
+    const box = el("div", "sx-mermaid");
+    const dom = shell(box);
+    const key = this.key;
+    const cached = mermaidCache.get(key);
+    if (cached) box.innerHTML = cached.svg;
+    else {
+      box.style.minHeight = "80px";
+      box.classList.add("is-loading");
+      renderMermaid(this.source)
+        .then((svg) => {
+          box.innerHTML = svg;
+          box.style.minHeight = "";
+          if (dom.isConnected) mermaidCache.set(key, { svg, height: dom.offsetHeight });
+        })
+        .catch((e) => {
+          box.replaceChildren(el("pre", "sx-block-error", `Diagrama inválido: ${e instanceof Error ? e.message : e}`));
+        })
+        .finally(() => {
+          box.classList.remove("is-loading");
+          view.requestMeasure();
+        });
+    }
+    if (!this.preview) clickToEdit(dom, view);
+    return dom;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// ---------- Notas de rodapé ^[inline] ----------
+
+export type Footnote = { from: number; to: number; text: string };
+
+export class FootnoteRefWidget extends WidgetType {
+  constructor(
+    readonly n: number,
+    readonly text: string,
+  ) {
+    super();
+  }
+  eq(other: FootnoteRefWidget) {
+    return other.n === this.n && other.text === this.text;
+  }
+  toDOM(view: EditorView) {
+    const sup = el("sup", "sx-fn-ref", String(this.n));
+    sup.title = this.text;
+    sup.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      view.dom.querySelector(`.sx-footnotes [data-n="${this.n}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return sup;
+  }
+  ignoreEvent(e: Event) {
+    return e.type === "mousedown";
+  }
+}
+
+export class FootnotesWidget extends WidgetType {
+  constructor(readonly notes: readonly Footnote[]) {
+    super();
+  }
+  eq(other: FootnotesWidget) {
+    return (
+      other.notes.length === this.notes.length &&
+      other.notes.every((n, i) => n.text === this.notes[i].text && n.to === this.notes[i].to)
+    );
+  }
+  toDOM(view: EditorView) {
+    const box = el("section", "sx-footnotes");
+    box.append(el("div", "sx-footnotes-title", "Notas"));
+    const ol = el("ol");
+    this.notes.forEach((note, i) => {
+      const li = el("li");
+      li.dataset.n = String(i + 1);
+      const num = el("button", "sx-fn-num", String(i + 1));
+      num.title = "Ir para a referência no texto";
+      num.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const pos = Math.min(note.to, view.state.doc.length);
+        view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+        view.focus();
+      });
+      const text = el("span", "sx-fn-text");
+      text.innerHTML = renderInline(note.text);
+      li.append(num, text);
+      ol.append(li);
+    });
+    box.append(ol);
+    const dom = shell(box);
+    wireLinks(dom, view);
+    dom.addEventListener("mousedown", (e) => {
+      if (!(e.target as HTMLElement).closest("a, button")) e.preventDefault();
+    });
+    return dom;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// ---------- ![[#Seção]] embutida ----------
+
+export class SectionEmbedWidget extends WidgetType {
+  constructor(
+    readonly file: string,
+    readonly heading: string,
+    /** Texto da própria nota (![[#Seção]]); null = ler outra nota */
+    readonly local: string | null,
+  ) {
+    super();
+  }
+  eq(other: SectionEmbedWidget) {
+    return other.file === this.file && other.heading === this.heading && other.local === this.local;
+  }
+  toDOM(view: EditorView) {
+    const h = host(view.state);
+    const box = el("span", "sx-section-embed");
+    const head = el("a", "sx-section-embed-head sx-wikilink");
+    head.dataset.target = `${this.file}#${this.heading}`;
+    head.append(svgIcon("link", 12), document.createTextNode(this.file ? `${this.file} › ${this.heading}` : this.heading));
+    const body = el("span", "sx-section-embed-body");
+    box.append(head, body);
+    const paint = (md: string | null) => {
+      if (md === null) body.replaceChildren(el("span", "sx-embed-missing", `Cabeçalho “${this.heading}” não encontrado`));
+      else if (!md.trim()) body.replaceChildren(el("em", "sx-math-empty", "Seção vazia"));
+      else body.innerHTML = renderBlock(md);
+      view.requestMeasure();
+    };
+    if (this.local !== null) paint(sectionText(this.local, this.heading));
+    else {
+      const path = h.resolveFile(this.file);
+      if (!path) paint(null);
+      else h.readNote(path).then((md) => box.isConnected && paint(md === null ? null : sectionText(md, this.heading)));
+    }
+    wireLinks(box, view);
+    return box;
   }
   ignoreEvent() {
     return true;
