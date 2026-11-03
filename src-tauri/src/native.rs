@@ -412,7 +412,16 @@ pub async fn export_html(path: String, state: State<'_, VaultState>) -> Res<Stri
 /// Grava a exportação em `folder/name.format`. Sem `overwrite`, um arquivo já
 /// existente devolve o erro "EXISTE" (o painel pergunta antes de substituir).
 #[tauri::command]
-pub async fn export_write(path: String, format: String, folder: String, name: String, overwrite: bool, state: State<'_, VaultState>) -> Res<String> {
+pub async fn export_write(
+    path: String,
+    format: String,
+    folder: String,
+    name: String,
+    overwrite: bool,
+    // HTML já renderizado pelo app (igual à leitura: LaTeX, Mermaid, callouts...)
+    html: Option<String>,
+    state: State<'_, VaultState>,
+) -> Res<String> {
     let root = vault_root(&state)?;
     let note = ensure_inside(&root, Path::new(&path))?;
     let dir = Path::new(&folder);
@@ -426,7 +435,10 @@ pub async fn export_write(path: String, format: String, folder: String, name: St
     }
     tauri::async_runtime::spawn_blocking(move || {
         match format.as_str() {
-            "html" => fs::write(&out, export::to_html(&root, &note)?).map_err(err),
+            "html" => match html {
+                Some(h) => fs::write(&out, h).map_err(err),
+                None => fs::write(&out, export::to_html(&root, &note)?).map_err(err),
+            },
             "docx" => export::to_docx(&root, &note, &out),
             "epub" | "odt" | "rtf" | "tex" | "pptx" => export::with_pandoc(&root, &note, &out),
             _ => Err("Formato inválido.".into()),

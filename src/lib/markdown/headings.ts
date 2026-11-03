@@ -46,17 +46,35 @@ export function parseHeadings(md: string): Heading[] {
   return out;
 }
 
-/** Cabeçalho pelo texto (último segmento de #A#B). */
-export function findHeading(md: string, heading: string): Heading | null {
-  const key = headingKey(heading);
-  return parseHeadings(md).find((h) => headingKey(h.text) === key) ?? null;
+/**
+ * Cabeçalho por caminho (#A#B, como o Obsidian grava): cada trecho é procurado
+ * depois do anterior, então "#1ª Questão#Resolução" acha a "Resolução" daquela
+ * questão mesmo havendo outras iguais. Trechos não encontrados são ignorados.
+ */
+export function findHeadingIndex(all: Heading[], path: string | string[]): number {
+  const segs = (Array.isArray(path) ? path : [path]).map(headingKey).filter(Boolean);
+  let at = -1;
+  for (let s = 0; s < segs.length; s++) {
+    const i = all.findIndex((h, j) => j > at && headingKey(h.text) === segs[s]);
+    if (i >= 0) at = i;
+    else if (s === segs.length - 1) {
+      // Último trecho fora da ordem esperada: aceita a primeira ocorrência
+      const any = all.findIndex((h) => headingKey(h.text) === segs[s]);
+      return any;
+    }
+  }
+  return segs.length ? at : -1;
+}
+
+export function findHeading(md: string, path: string | string[]): Heading | null {
+  const all = parseHeadings(md);
+  return all[findHeadingIndex(all, path)] ?? null;
 }
 
 /** Texto da seção (sem a linha do cabeçalho) até o próximo cabeçalho de nível igual ou maior. */
-export function sectionText(md: string, heading: string): string | null {
+export function sectionText(md: string, path: string | string[]): string | null {
   const all = parseHeadings(md);
-  const key = headingKey(heading);
-  const i = all.findIndex((h) => headingKey(h.text) === key);
+  const i = findHeadingIndex(all, path);
   if (i < 0) return null;
   const h = all[i];
   const next = all.slice(i + 1).find((n) => n.level <= h.level);

@@ -991,25 +991,60 @@ export class FootnotesWidget extends WidgetType {
   }
 }
 
+// ---------- [[link]] renderizado ----------
+
+/** Rótulo do link como Markdown: [[#X|Vetores no $\mathbb{R}^2$]] mostra a fórmula, **negrito** etc. */
+export class WikiLinkWidget extends WidgetType {
+  constructor(
+    readonly target: string,
+    readonly label: string,
+  ) {
+    super();
+  }
+  eq(other: WikiLinkWidget) {
+    return other.target === this.target && other.label === this.label;
+  }
+  toDOM(view: EditorView) {
+    const a = el("span", "sx-wikilink");
+    a.dataset.target = this.target;
+    a.innerHTML = renderInline(this.label);
+    // Links internos do rótulo não abrem nada à parte
+    a.querySelectorAll("a").forEach((x) => x.replaceWith(...x.childNodes));
+    a.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      host(view.state).openLink(this.target, e.ctrlKey || e.metaKey);
+    });
+    return a;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 // ---------- ![[#Seção]] embutida ----------
 
 export class SectionEmbedWidget extends WidgetType {
   constructor(
     readonly file: string,
-    readonly heading: string,
+    /** Caminho de cabeçalhos (#A#B) */
+    readonly path: readonly string[],
     /** Texto da própria nota (![[#Seção]]); null = ler outra nota */
     readonly local: string | null,
   ) {
     super();
   }
   eq(other: SectionEmbedWidget) {
-    return other.file === this.file && other.heading === this.heading && other.local === this.local;
+    return other.file === this.file && other.path.join("#") === this.path.join("#") && other.local === this.local;
+  }
+  private get heading() {
+    return this.path[this.path.length - 1] ?? "";
   }
   toDOM(view: EditorView) {
     const h = host(view.state);
     const box = el("span", "sx-section-embed");
     const head = el("a", "sx-section-embed-head sx-wikilink");
-    head.dataset.target = `${this.file}#${this.heading}`;
+    head.dataset.target = `${this.file}#${this.path.join("#")}`;
     head.append(svgIcon("link", 12), document.createTextNode(this.file ? `${this.file} › ${this.heading}` : this.heading));
     const body = el("span", "sx-section-embed-body");
     box.append(head, body);
@@ -1019,11 +1054,11 @@ export class SectionEmbedWidget extends WidgetType {
       else body.innerHTML = renderBlock(md);
       view.requestMeasure();
     };
-    if (this.local !== null) paint(sectionText(this.local, this.heading));
+    if (this.local !== null) paint(sectionText(this.local, [...this.path]));
     else {
       const path = h.resolveFile(this.file);
       if (!path) paint(null);
-      else h.readNote(path).then((md) => box.isConnected && paint(md === null ? null : sectionText(md, this.heading)));
+      else h.readNote(path).then((md) => box.isConnected && paint(md === null ? null : sectionText(md, [...this.path])));
     }
     wireLinks(box, view);
     return box;

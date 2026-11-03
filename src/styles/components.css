@@ -97,14 +97,16 @@ input.sx-doc-title:focus {
   animation: sx-rise 140ms var(--sx-ease);
 }
 .sx-palette > input {
-  height: 50px;
-  padding: 0 18px;
+  /* Sem flex-shrink: 0 a lista longa espremia o campo de busca */
+  flex: none;
+  height: 56px;
+  padding: 0 20px;
   border: none;
   border-bottom: 1px solid var(--sx-border);
   background: transparent;
   color: var(--sx-text-strong);
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
   outline: none;
   user-select: text;
 }
@@ -156,6 +158,7 @@ input.sx-doc-title:focus {
   color: var(--sx-text-faint);
 }
 .sx-palette-foot {
+  flex: none;
   display: flex;
   gap: 16px;
   padding: 8px 14px;
@@ -1964,4 +1967,110 @@ body.sx-obsidian-theme .sx-app {
 .sx-outline-item:hover {
   background: var(--sx-surface-hover);
   color: var(--sx-text-strong);
+}
+
+/* ---------- Controles da janela (sem barra nativa) ---------- */
+
+.sx-winctl {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 900;
+  display: flex;
+  height: calc(var(--sx-bar) + var(--sx-gap) - 6px);
+  padding: 4px 4px 0 0;
+}
+.sx-winctl-btn {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 100%;
+  border-radius: var(--sx-radius-sm);
+  color: var(--sx-text-muted);
+  transition: background 120ms var(--sx-ease), color 120ms var(--sx-ease);
+}
+.sx-winctl-btn svg {
+  stroke-width: 1.1;
+  shape-rendering: geometricPrecision;
+}
+.sx-winctl-btn:hover {
+  background: var(--sx-surface-hover);
+  color: var(--sx-text-strong);
+}
+.sx-winctl-btn:active {
+  background: var(--sx-surface-active);
+}
+.sx-winctl-btn.is-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+/* Espaço para os controles no canto: nas abas, ou no chat lateral quando ele está aberto */
+.sx-app:not(.has-chat-side) .sx-tabbar {
+  padding-right: 140px;
+}
+.sx-app.has-chat-side .sx-chat-side .sx-chat-head {
+  padding-right: 136px;
+}
+
+/* ---------- Abas da barra lateral (Arquivos · Busca · Sumário) ---------- */
+
+.sx-sidetabs {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.sx-sidetabs button {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--sx-radius-sm);
+  font-size: var(--sx-text-sm);
+  font-weight: 500;
+  color: var(--sx-text-faint);
+  transition: background 120ms var(--sx-ease), color 120ms var(--sx-ease);
+}
+.sx-sidetabs button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sx-sidetabs button:hover {
+  color: var(--sx-text);
+  background: var(--sx-surface-hover);
+}
+.sx-sidetabs button.is-on {
+  color: var(--sx-text-strong);
+  background: var(--sx-surface-active);
+}
+/* Barra estreita: só os ícones */
+@container (max-width: 230px) {
+  .sx-sidetabs button span {
+    display: none;
+  }
+}
+.sx-sidebar-head {
+  container-type: inline-size;
+}
+
+/* Rótulos com Markdown (LaTeX, negrito) em links e no sumário */
+.sx-wikilink .katex,
+.sx-outline-item .katex {
+  font-size: 1em;
+}
+.sx-outline-item strong {
+  font-weight: inherit;
+}
+span.sx-wikilink {
+  cursor: pointer;
+}
+.sx-wikilink strong,
+.sx-wikilink em,
+.sx-wikilink .katex {
+  color: inherit;
 }

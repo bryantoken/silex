@@ -55,9 +55,11 @@
   import FormatDock from "./lib/components/FormatDock.svelte";
   import ExportModal from "./lib/components/ExportModal.svelte";
   import Outline from "./lib/components/Outline.svelte";
+  import WindowControls from "./lib/components/WindowControls.svelte";
   import { splitLink } from "./lib/markdown/links";
   import { findHeading } from "./lib/markdown/headings";
   import { revealPos, toggleFoldAt } from "./lib/editor/folding";
+  import { noteToHtml } from "./lib/markdown/exportHtml";
   import ChatPanel, { type ChatSettings } from "./lib/plugins/ChatPanel.svelte";
   import { chatStore } from "./lib/plugins/chat.svelte";
   import type { LinkTarget } from "./lib/editor/context";
@@ -482,9 +484,6 @@
 
   async function createNote(folder: string, name?: string) {
     const path = await invoke<string>("create_note", { folder, name: name ?? null });
-    await refreshTree(false);
-    notes = await invoke<GraphNote[]>("index_vault");
-    reveal(path);
     // Templater: template da pasta em notas novas (se configurado)
     if (core.has("templater")) {
       const tpl = await invoke<string | null>("templater_for_folder", { target: path }).catch(() => null);
@@ -497,6 +496,14 @@
         }
       }
     }
+    // Árvore e índice (grafo/backlinks) atualizam em segundo plano: reindexar o cofre
+    // inteiro levava segundos e segurava a abertura da nota
+    refreshTree(false)
+      .then(() => reveal(path))
+      .catch(fail);
+    invoke<GraphNote[]>("index_vault")
+      .then((n) => (notes = n))
+      .catch(fail);
     return path;
   }
 
@@ -641,14 +648,32 @@
 
   let exportState = $state<{ note: string; format: string; label: string } | null>(null);
 
+  /** HTML da nota igual à leitura (LaTeX, Mermaid, callouts, grifos...). `standalone`: fontes embutidas para o arquivo .html. */
+  async function exportHtml(note: string, standalone: boolean) {
+    const md = docs[note]?.content ?? (await invoke<string>("read_note", { filePath: note }));
+    return noteToHtml(
+      md,
+      {
+        title: stem(note),
+        resolveFile,
+        assetUrl: (p) => convertFileSrc(p),
+        readNote: editorHost.readNote,
+        renderBlock: (lang, source, content) => invoke<BlockResult>("render_block", { lang, source, path: note, content }),
+        blockLangs,
+      },
+      standalone,
+    );
+  }
+
   async function exportNote(format: "pdf" | "html" | "docx" | "epub" | "odt" | "rtf" | "tex" | "pptx") {
     if (!activePath || activeKind !== "markdown") return notify("Abra uma nota para exportar.", true);
     await save(activePath);
     const note = activePath;
     try {
       if (format === "pdf") {
-        // PDF pelo diálogo de impressão do sistema (escolha "Salvar como PDF")
-        const html = await invoke<string>("export_html", { path: note });
+        // PDF pelo diálogo de impressão do sistema (escolha "Salvar como PDF"),
+        // a partir do mesmo HTML da exportação .html
+        const html = await exportHtml(note, false);
         const frame = document.createElement("iframe");
         frame.style.cssText = "position:fixed;width:0;height:0;border:0;opacity:0";
         document.body.appendChild(frame);
@@ -893,9 +918,9 @@
   async function followLink(target: string, newTab: boolean) {
     if (!tree) return;
     // [[Nota#Cabeçalho]] abre a nota e rola até o cabeçalho; [[#Cabeçalho]] fica na mesma nota
-    const { file, heading } = splitLink(target);
+    const { file, heading, path: headingPath } = splitLink(target);
     if (!file) {
-      if (heading) goToHeading(heading);
+      if (heading) goToHeading(headingPath);
       return;
     }
     try {
@@ -903,17 +928,18 @@
       await openFile(path, newTab);
       if (heading) {
         await tick();
-        requestAnimationFrame(() => goToHeading(heading));
+        requestAnimationFrame(() => goToHeading(headingPath));
       }
     } catch (e) {
       fail(e);
     }
   }
 
-  function goToHeading(heading: string) {
+  function goToHeading(headingPath: string[]) {
+    const heading = headingPath[headingPath.length - 1] ?? "";
     const v = view();
     if (!v) return;
-    const h = findHeading(v.state.doc.toString(), heading);
+    const h = findHeading(v.state.doc.toString(), headingPath);
     if (h) revealPos(v, h.from);
     else notify(`Cabeçalho “${heading}” não encontrado`, true);
   }
@@ -1707,7 +1733,7 @@
 {#if booting}
   <div class="sx-boot"><Logo size={64} /></div>
 {:else}
-  <div class="sx-app">
+  <div class="sx-app" class:has-chat-side={chatMode === "side" && core.has("chat")}>
     <nav class="sx-rail" aria-label="Ações">
       <button class="sx-rail-brand" title="Cofres" onclick={() => (showVaults = true)}><Logo size={28} /></button>
       <button
@@ -1738,18 +1764,24 @@
       {/if}
       <button class="icon-btn" title="Paleta de comandos (Ctrl+P)" onclick={() => openPalette("commands")}><Icon name="command" /></button>
       <button class="icon-btn" title="Nova nota (Ctrl+N)" disabled={!tree} onclick={() => newNote()}><Icon name="edit" /></button>
-      <div class="sx-rail-spacer"></div>
+      <div class="sx-rail-spacer" data-tauri-drag-region></div>
       <button class="icon-btn" title="Trocar de cofre" onclick={() => (showVaults = true)}><Icon name="vaults" /></button>
       <button class="icon-btn" title="Configurações (Ctrl+,)" disabled={!tree} onclick={() => (settingsOpen = true)}><Icon name="settings" /></button>
     </nav>
 
     {#if sidebarOpen}
       <aside class="sx-sidebar" style:width="{sidebarWidth}px">
-        <div class="sx-sidebar-head">
-          <div class="sx-segmented" role="tablist">
-            <button role="tab" aria-selected={panel === "files"} class:is-on={panel === "files"} onclick={() => (panel = "files")}>Arquivos</button>
-            <button role="tab" aria-selected={panel === "search"} class:is-on={panel === "search"} onclick={openSearch}>Busca</button>
-            <button role="tab" aria-selected={panel === "outline"} class:is-on={panel === "outline"} onclick={openOutline}>Sumário</button>
+        <div class="sx-sidebar-head" data-tauri-drag-region>
+          <div class="sx-sidetabs" role="tablist">
+            <button role="tab" title="Arquivos" aria-selected={panel === "files"} class:is-on={panel === "files"} onclick={() => (panel = "files")}>
+              <Icon name="folder" size={14} /><span>Arquivos</span>
+            </button>
+            <button role="tab" title="Busca (Ctrl+Shift+F)" aria-selected={panel === "search"} class:is-on={panel === "search"} onclick={openSearch}>
+              <Icon name="search" size={14} /><span>Busca</span>
+            </button>
+            <button role="tab" title="Sumário (Ctrl+Shift+U)" aria-selected={panel === "outline"} class:is-on={panel === "outline"} onclick={openOutline}>
+              <Icon name="list" size={14} /><span>Sumário</span>
+            </button>
           </div>
         </div>
 
@@ -1899,7 +1931,7 @@
       </div>
 
       <section class="sx-canvas">
-        <header class="sx-view-head">
+        <header class="sx-view-head" data-tauri-drag-region>
           <div class="sx-view-nav">
             <button class="icon-btn sm" title="Voltar (Alt+←)" disabled={activeTab.index <= 0} onclick={() => navigate(-1)}>
               <Icon name="back" size={16} stroke={2} />
@@ -2089,6 +2121,7 @@
     {@render chatPanel("popup")}
   {/if}
 {/if}
+<WindowControls />
 
 {#snippet chatPanel(mode: "popup" | "side")}
   <ChatPanel
@@ -2132,6 +2165,7 @@
     }}
     onerror={fail}
     onclose={() => (exportState = null)}
+    build={ex.format === "html" ? () => exportHtml(ex.note, true) : undefined}
   />
 {/if}
 

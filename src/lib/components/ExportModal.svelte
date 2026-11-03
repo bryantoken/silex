@@ -18,8 +18,10 @@
     ondone: (out: string, open: boolean) => void;
     onerror: (e: unknown) => void;
     onclose: () => void;
+    /** HTML pronto (renderizado pelo app); só no formato html */
+    build?: () => Promise<string>;
   };
-  let { note, format, label, defaultName, openAfter, ondone, onerror, onclose }: Props = $props();
+  let { note, format, label, defaultName, openAfter, ondone, onerror, onclose, build }: Props = $props();
 
   const KEY = "silex.exportDir";
   let name = $state(untrack(() => defaultName));
@@ -54,7 +56,8 @@
     if (!name.trim() || !folder || busy) return;
     busy = true;
     try {
-      const out = await invoke<string>("export_write", { path: note, format, folder, name: name.trim(), overwrite });
+      const html = build ? await build() : null;
+      const out = await invoke<string>("export_write", { path: note, format, folder, name: name.trim(), overwrite, html });
       try {
         localStorage.setItem(KEY, folder);
       } catch {}

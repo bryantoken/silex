@@ -1,13 +1,13 @@
 /** [[Nota#Cabeçalho|apelido]]: separa a nota do caminho de cabeçalhos (o Obsidian aceita #A#B). */
-export function splitLink(target: string): { file: string; heading: string } {
+export function splitLink(target: string): { file: string; heading: string; path: string[] } {
   const i = target.indexOf("#");
-  if (i < 0) return { file: target.trim(), heading: "" };
+  if (i < 0) return { file: target.trim(), heading: "", path: [] };
   const path = target
     .slice(i + 1)
     .split("#")
     .map((s) => s.trim())
     .filter(Boolean);
-  return { file: target.slice(0, i).trim(), heading: path[path.length - 1] ?? "" };
+  return { file: target.slice(0, i).trim(), heading: path[path.length - 1] ?? "", path };
 }
 
 /** Texto exibido de um wikilink sem apelido. */

@@ -20,9 +20,10 @@ import {
   ImageWidget,
   MathWidget,
   SectionEmbedWidget,
+  WikiLinkWidget,
 } from "./widgets";
 import { mathSource } from "../markdown/math";
-import { splitLink } from "../markdown/links";
+import { linkLabel, splitLink } from "../markdown/links";
 import { footnoteNumber } from "./footnotes";
 
 // Alvo vazio vale para links na própria nota: [[#Cabeçalho]] e ![[#Cabeçalho]]
@@ -71,11 +72,61 @@ function build(view: EditorView): DecorationSet {
   let localText: string | null = null;
 
   for (const { from, to } of view.visibleRanges) {
+    // Links primeiro: o que fica dentro deles ($LaTeX$, **negrito**) é desenhado pelo widget do link
+    const links: [number, number][] = [];
+    // [[wikilinks]] e ![[embeds]] (sintaxe do Obsidian, fora do CommonMark)
+    const text = doc.sliceString(from, to);
+    for (const m of text.matchAll(WIKI)) {
+      const start = from + m.index!;
+      const end = start + m[0].length;
+      const ctx = syntaxTree(state).resolveInner(start, 1);
+      let inCode = false;
+      for (let n: typeof ctx | null = ctx; n; n = n.parent) {
+        // Em tabelas e notas ^[...] o link é desenhado pelo widget delas
+        if (NOT_LINKABLE.has(n.name) || n.name === "Table" || n.name === "InlineFootnote") inCode = true;
+      }
+      if (inCode) continue;
+
+      const embed = m[1] === "!";
+      const file = m[2].trim();
+      if (!file && !splitLink(m[3] ?? "").heading) continue; // [[]] e [[#]]
+      const target = file + (m[3] ?? "");
+      const alias = m[4];
+      const open = !revealed(start, end);
+      links.push([start, end]);
+
+      if (embed) {
+        const { heading, path } = splitLink(target);
+        if (open && heading) {
+          // ![[#Seção]] / ![[Nota#Seção]]: mostra o conteúdo da seção
+          localText ??= doc.toString();
+          decos.push(Decoration.replace({ widget: new SectionEmbedWidget(file, path, file ? null : localText) }).range(start, end));
+        } else if (open) {
+          const size = alias && /^\d+(x\d+)?$/.test(alias.trim()) ? alias.trim() : "";
+          decos.push(Decoration.replace({ widget: new EmbedWidget(target, size) }).range(start, end));
+        } else {
+          decos.push(Decoration.mark({ class: "sx-embed-raw" }).range(start, end));
+        }
+        continue;
+      }
+
+      if (open) {
+        // Sem apelido, [[#A#B]] mostra "B" e [[Nota#B]] mostra "Nota › B"
+        const label = alias ?? (file ? linkLabel(target) : splitLink(target).heading);
+        decos.push(Decoration.replace({ widget: new WikiLinkWidget(target, label) }).range(start, end));
+      } else {
+        decos.push(
+          Decoration.mark({ class: "sx-wikilink", attributes: { "data-target": target, "data-raw": "1" } }).range(start, end),
+        );
+      }
+    }
+
     syntaxTree(state).iterate({
       from,
       to,
       enter: (node) => {
         const name = node.name;
+        if (links.some(([a, b]) => node.from >= a && node.to <= b)) return false;
 
         if (name === "Frontmatter") return false;
 
@@ -280,54 +331,6 @@ function build(view: EditorView): DecorationSet {
       },
     });
 
-    // [[wikilinks]] e ![[embeds]] (sintaxe do Obsidian, fora do CommonMark)
-    const text = doc.sliceString(from, to);
-    for (const m of text.matchAll(WIKI)) {
-      const start = from + m.index!;
-      const end = start + m[0].length;
-      if (isCovered(start, end)) continue;
-      const ctx = syntaxTree(state).resolveInner(start, 1);
-      let inCode = false;
-      for (let n: typeof ctx | null = ctx; n; n = n.parent) {
-        if (NOT_LINKABLE.has(n.name)) inCode = true;
-      }
-      if (inCode) continue;
-
-      const embed = m[1] === "!";
-      const file = m[2].trim();
-      if (!file && !splitLink(m[3] ?? "").heading) continue; // [[]] e [[#]]
-      const target = file + (m[3] ?? "");
-      const alias = m[4];
-      const open = !revealed(start, end);
-
-      if (embed) {
-        const { heading } = splitLink(target);
-        if (open && heading) {
-          // ![[#Seção]] / ![[Nota#Seção]]: mostra o conteúdo da seção
-          localText ??= doc.toString();
-          decos.push(Decoration.replace({ widget: new SectionEmbedWidget(file, heading, file ? null : localText) }).range(start, end));
-        } else if (open) {
-          const size = alias && /^\d+(x\d+)?$/.test(alias.trim()) ? alias.trim() : "";
-          decos.push(Decoration.replace({ widget: new EmbedWidget(target, size) }).range(start, end));
-        } else {
-          decos.push(Decoration.mark({ class: "sx-embed-raw" }).range(start, end));
-        }
-        continue;
-      }
-
-      // Sem apelido, [[#A#B]] mostra só "B"; [[Nota#B]] mostra "Nota#B"
-      const labelStart = alias ? end - 2 - alias.length : file ? start + 2 : start + 2 + m[3]!.lastIndexOf("#") + 1;
-      const labelEnd = end - 2;
-      if (open) {
-        decos.push(hide.range(start, labelStart));
-        decos.push(Decoration.mark({ class: "sx-wikilink", attributes: { "data-target": target } }).range(labelStart, labelEnd));
-        decos.push(hide.range(labelEnd, end));
-      } else {
-        decos.push(
-          Decoration.mark({ class: "sx-wikilink", attributes: { "data-target": target, "data-raw": "1" } }).range(start, end),
-        );
-      }
-    }
   }
 
   return Decoration.set(decos, true);

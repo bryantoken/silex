@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import Icon from "./Icon.svelte";
   import { parseHeadings, type Heading } from "../markdown/headings";
+  import { renderInline } from "../markdown/render";
 
   type Props = { content: string; path: string; onjump: (h: Heading) => void };
   let { content, path, onjump }: Props = $props();
@@ -77,7 +78,7 @@
         {:else}
           <span class="sx-outline-chev is-leaf"></span>
         {/if}
-        <button class="sx-outline-item" data-level={n.h.level} title={n.h.text} onclick={() => onjump(n.h)}>{n.h.text}</button>
+        <button class="sx-outline-item" data-level={n.h.level} title={n.h.text} onclick={() => onjump(n.h)}>{@html renderInline(n.h.text)}</button>
       </div>
       {#if n.children.length && !shut}
         <ul>{@render items(n.children)}</ul>

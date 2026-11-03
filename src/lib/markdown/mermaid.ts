@@ -17,10 +17,10 @@ function load(): Promise<Mermaid> {
 }
 
 /** Renderiza para SVG. As chamadas vão em fila (o mermaid não aceita renderizações em paralelo). */
-export function renderMermaid(source: string): Promise<string> {
+export function renderMermaid(source: string, force?: "default" | "dark"): Promise<string> {
   const job = queue.then(async () => {
     const mermaid = await load();
-    const want = isDark() ? "dark" : "default";
+    const want = force ?? (isDark() ? "dark" : "default");
     if (theme !== want) {
       theme = want;
       mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: want, fontFamily: "inherit" });
