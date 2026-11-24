@@ -117,6 +117,27 @@ impl SearchIndex {
         self.reader.reload().map_err(|e| e.to_string())
     }
 
+    /// Remove e insere várias notas com um único commit (mover/renomear pastas).
+    /// Um commit por nota deixava mover uma pasta com muitas notas lento.
+    pub fn apply<'a>(
+        &self,
+        remove: impl IntoIterator<Item = &'a Path>,
+        add: impl IntoIterator<Item = (&'a Path, &'a str)>,
+    ) -> Result<(), String> {
+        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        for path in remove {
+            writer.delete_term(Term::from_field_text(self.path, &path.to_string_lossy()));
+        }
+        for (path, content) in add {
+            writer.delete_term(Term::from_field_text(self.path, &path.to_string_lossy()));
+            writer
+                .add_document(self.make_doc(path, content))
+                .map_err(|e| e.to_string())?;
+        }
+        writer.commit().map_err(|e| e.to_string())?;
+        self.reader.reload().map_err(|e| e.to_string())
+    }
+
     pub fn remove(&self, path: &Path) -> Result<(), String> {
         let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
         writer.delete_term(Term::from_field_text(self.path, &path.to_string_lossy()));
@@ -219,6 +240,22 @@ mod tests {
         ])
         .unwrap();
         idx
+    }
+
+    #[test]
+    fn apply_moves_notes_in_one_commit() {
+        let idx = index();
+        idx.apply(
+            [Path::new("/v/Perto.md")],
+            [(Path::new("/v/pasta/Perto.md"), "o gato preto dormiu no sofá")],
+        )
+        .unwrap();
+        let hits = idx.search("sofá", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "/v/pasta/Perto.md");
+        // Só remover (excluir em lote)
+        idx.apply([Path::new("/v/pasta/Perto.md")], std::iter::empty()).unwrap();
+        assert!(idx.search("sofá", 10).unwrap().is_empty());
     }
 
     fn titles(hits: &[SearchHit]) -> Vec<&str> {

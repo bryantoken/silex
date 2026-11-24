@@ -10,7 +10,7 @@ use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -40,24 +40,24 @@ fn ctime_ms(p: &Path) -> i64 {
 
 // ---------- Chaves ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn secret_len(name: String) -> usize {
     secrets::len(&name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_secret(name: String, value: String) -> Res<usize> {
     secrets::set(&name, &value)?;
     Ok(secrets::len(&name))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn jev_test(model: String) -> Res<f64> {
     let a = net::jev_ask(&model, &json!("ok"), &json!({ "ok": { "type": "noul", "instructions": "Is this text the word ok?" } }), 20, 1).await?;
     a.answers.pointer("/ok/noul").and_then(Value::as_f64).ok_or_else(|| "Jev respondeu sem o valor esperado.".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn llm_test(provider: String, model: String) -> Res<bool> {
     let r = net::llm_call(&provider, &model, "Responda JSON {\"ok\":true}.", &json!({})).await?;
     Ok(r.value.get("ok") == Some(&json!(true)))
@@ -108,6 +108,25 @@ pub fn jev_touch(state: &State<VaultState>, root: &Path, page: &Page, content: &
     *index = jev_home::Index::new(docs, v);
 }
 
+/// Notas movidas/renomeadas em lote: troca todas de uma vez (um único rebuild do índice).
+pub fn jev_relocate(state: &State<VaultState>, root: &Path, removed: &[PathBuf], added: &[(Page, String)]) {
+    let Ok(mut guard) = state.jev.write() else { return };
+    let Some(index) = guard.as_mut() else { return };
+    let s = jev_settings(&config::load_vault(root));
+    let gone: std::collections::HashSet<String> = removed.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let mut docs: Vec<jev_home::Doc> = index.docs.iter().filter(|d| !gone.contains(&d.abs)).cloned().collect();
+    for (page, content) in added {
+        let p = Path::new(&page.path);
+        let rel = rel_of(root, p);
+        docs.retain(|d| d.path != rel);
+        if !jev_home::excluded(&s.exclude, &rel) {
+            docs.push(jev_home::make_doc(page, &rel, content, mtime_ms(p), s.index_chars));
+        }
+    }
+    let v = state.jev_version.fetch_add(1, Ordering::SeqCst) + 1;
+    *index = jev_home::Index::new(docs, v);
+}
+
 pub fn jev_drop(state: &State<VaultState>, path: &Path) {
     if let Ok(mut guard) = state.jev.write() {
         if let Some(index) = guard.as_mut() {
@@ -121,20 +140,20 @@ pub fn jev_drop(state: &State<VaultState>, path: &Path) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn jev_home_local(query: String, limit: Option<usize>, state: State<VaultState>) -> Res<Vec<Value>> {
     let root = vault_root(&state)?;
     with_jev(&state, &root, |idx| idx.local_search(&query, limit.unwrap_or(8)).into_iter().map(|i| jev_home::doc_json(&idx.docs[i])).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn jev_home_reindex(state: State<'_, VaultState>) -> Res<usize> {
     let root = vault_root(&state)?;
     *state.jev.write().map_err(err)? = None;
     with_jev(&state, &root, |idx| idx.docs.len())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn jev_home_find(query: String, force_broad: bool, recent: Vec<String>, state: State<'_, VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let s = jev_settings(&config::load_vault(&root));
@@ -189,7 +208,7 @@ fn notes_info(root: &Path, s: &organizer::Settings) -> Vec<(organizer::NoteInfo,
 }
 
 /// Analisa a nota (arquivo), uma pasta ou o cofre inteiro (scope = None).
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn organizer_scan(app: AppHandle, scope: Option<String>, force: bool, state: State<'_, VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     if secrets::len("typesafe") == 0 {
@@ -274,12 +293,12 @@ pub async fn organizer_scan(app: AppHandle, scope: Option<String>, force: bool, 
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn organizer_cancel(state: State<VaultState>) {
     state.organizer_cancel.store(true, Ordering::SeqCst);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn organizer_list(state: State<VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let s = organizer::load(&root);
@@ -291,7 +310,7 @@ pub fn organizer_list(state: State<VaultState>) -> Res<Value> {
     Ok(json!({ "suggestions": live, "running": state.organizer_running.load(Ordering::SeqCst) }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn organizer_apply(selection: HashMap<String, Vec<organizer::Item>>, state: State<VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let s = organizer_settings(&config::load_vault(&root));
@@ -318,7 +337,7 @@ pub fn organizer_apply(selection: HashMap<String, Vec<organizer::Item>>, state: 
     Ok(json!({ "ok": applied.ok, "fail": applied.fail, "lastError": applied.last_error, "log": log }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn organizer_dismiss(items: HashMap<String, Vec<String>>, state: State<VaultState>) -> Res<()> {
     let root = vault_root(&state)?;
     let mut s = organizer::load(&root);
@@ -330,14 +349,14 @@ pub fn organizer_dismiss(items: HashMap<String, Vec<String>>, state: State<Vault
     organizer::save(&root, &s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn organizer_clear(state: State<VaultState>) -> Res<()> {
     organizer::save(&vault_root(&state)?, &HashMap::new())
 }
 
 // ---------- Templater ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn templater_list(state: State<VaultState>) -> Res<Vec<Value>> {
     let root = vault_root(&state)?;
     let s: templater::Settings = config::load_vault(&root).plugin("templater");
@@ -350,7 +369,7 @@ pub fn templater_list(state: State<VaultState>) -> Res<Vec<Value>> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn templater_render(template: String, target: String, answers: Vec<String>, clipboard: String, state: State<VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let tpl = ensure_inside(&root, Path::new(&template))?;
@@ -377,7 +396,7 @@ pub fn templater_render(template: String, target: String, answers: Vec<String>, 
 }
 
 /// Template de pasta configurado para uma nova nota (se o gatilho estiver ligado).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn templater_for_folder(target: String, state: State<VaultState>) -> Res<Option<String>> {
     let root = vault_root(&state)?;
     let cfg = config::load_vault(&root);
@@ -402,7 +421,7 @@ pub fn templater_for_folder(target: String, state: State<VaultState>) -> Res<Opt
 // síncronos do Tauri rodam nela e congelavam a janela (e o cursor do mouse)
 // enquanto o HTML/DOCX era montado.
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn export_html(path: String, state: State<'_, VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let note = ensure_inside(&root, Path::new(&path))?;
@@ -411,7 +430,7 @@ pub async fn export_html(path: String, state: State<'_, VaultState>) -> Res<Stri
 
 /// Grava a exportação em `folder/name.format`. Sem `overwrite`, um arquivo já
 /// existente devolve o erro "EXISTE" (o painel pergunta antes de substituir).
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn export_write(
     path: String,
     format: String,
@@ -449,7 +468,7 @@ pub async fn export_write(
     .map_err(err)?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_pandoc() -> Option<String> {
     export::pandoc_version()
 }
@@ -473,7 +492,7 @@ fn reindex_rel(state: &State<VaultState>, root: &Path, rel: &str) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_init(state: State<VaultState>) -> Res<mesa::Settings> {
     let root = vault_root(&state)?;
     let s = mesa_settings(&root);
@@ -485,7 +504,7 @@ pub fn mesa_init(state: State<VaultState>) -> Res<mesa::Settings> {
     Ok(s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_save_settings(settings: mesa::Settings, state: State<VaultState>) -> Res<()> {
     let root = vault_root(&state)?;
     let mut cfg = config::load_vault(&root);
@@ -494,13 +513,13 @@ pub fn mesa_save_settings(settings: mesa::Settings, state: State<VaultState>) ->
     mesa::config_note_write(&root, &settings)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_all(state: State<VaultState>) -> Res<Vec<mesa::Record>> {
     let root = vault_root(&state)?;
     Ok(store_for(&root, &mesa_settings(&root))?.all(None))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_create(kind: String, title: String, extra: Map<String, Value>, body: String, state: State<VaultState>) -> Res<mesa::Record> {
     let root = vault_root(&state)?;
     let r = store_for(&root, &mesa_settings(&root))?.create(&kind, &title, &extra, &body)?;
@@ -508,7 +527,7 @@ pub fn mesa_create(kind: String, title: String, extra: Map<String, Value>, body:
     Ok(r)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_update(path: String, base: String, patch: Map<String, Value>, body: Option<String>, state: State<VaultState>) -> Res<mesa::Record> {
     let root = vault_root(&state)?;
     let r = store_for(&root, &mesa_settings(&root))?.update(&path, &base, &patch, body.as_deref())?;
@@ -516,33 +535,33 @@ pub fn mesa_update(path: String, base: String, patch: Map<String, Value>, body: 
     Ok(r)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_undo(file: String, state: State<VaultState>) -> Res<()> {
     let root = vault_root(&state)?;
     store_for(&root, &mesa_settings(&root))?.undo(&file)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_history(limit: usize, state: State<VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let (rows, total) = store_for(&root, &mesa_settings(&root))?.history(limit);
     Ok(json!({ "rows": rows, "total": total }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_usage(state: State<VaultState>) -> Res<Vec<Value>> {
     let root = vault_root(&state)?;
     Ok(mesa::usage_load(&store_for(&root, &mesa_settings(&root))?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_context(projects: Vec<Value>, focus: Option<Vec<String>>, budget: usize, state: State<VaultState>) -> Res<Map<String, Value>> {
     let root = vault_root(&state)?;
     let s = mesa_settings(&root);
     mesa::context(&store_for(&root, &s)?, &s, &projects, focus.as_deref(), budget)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn mesa_ai(app: AppHandle, system: String, input: Value, purpose: String, task: Option<String>, tasks: Vec<Value>, state: State<'_, VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let s = mesa_settings(&root);
@@ -550,7 +569,7 @@ pub async fn mesa_ai(app: AppHandle, system: String, input: Value, purpose: Stri
     mesa::ai_call(&store, &app_dir(&app)?, &s, &system, &input, &purpose, task.as_deref(), &tasks).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn mesa_jev(app: AppHandle, state_json: Value, questions: Value, purpose: String, tasks: Vec<Value>, state: State<'_, VaultState>) -> Res<Value> {
     let root = vault_root(&state)?;
     let s = mesa_settings(&root);
@@ -558,17 +577,17 @@ pub async fn mesa_jev(app: AppHandle, state_json: Value, questions: Value, purpo
     mesa::jev_call(&store, &app_dir(&app)?, &s, &state_json, &questions, &purpose, &tasks).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_local_get(app: AppHandle, state: State<VaultState>) -> Res<Map<String, Value>> {
     Ok(mesa::local_get(&app_dir(&app)?, &vault_root(&state)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_local_set(app: AppHandle, key: String, value: Value, state: State<VaultState>) -> Res<()> {
     mesa::local_set(&app_dir(&app)?, &vault_root(&state)?, &key, value)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mesa_read(path: String, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     store_for(&root, &mesa_settings(&root))?.read(&path)
@@ -579,7 +598,7 @@ pub fn mesa_read(path: String, state: State<VaultState>) -> Res<String> {
 const TEXT_EXTS: &[&str] = &["canvas", "excalidraw", "md", "json"];
 
 /// Grava um arquivo de texto do cofre (canvas, desenhos). Notas usam save_note.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_text_file(path: String, content: String, state: State<VaultState>) -> Res<()> {
     let root = vault_root(&state)?;
     let p = ensure_inside(&root, Path::new(&path))?;
@@ -595,7 +614,7 @@ pub fn write_text_file(path: String, content: String, state: State<VaultState>) 
 }
 
 /// Cria um arquivo novo (nome único) numa pasta do cofre e devolve o caminho.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_file(folder: String, name: String, ext: String, content: String, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let dir = Path::new(&folder).canonicalize().map_err(err)?;

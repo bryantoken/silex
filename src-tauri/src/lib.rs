@@ -160,14 +160,14 @@ pub(crate) fn app_dir(app: &AppHandle) -> Res<PathBuf> {
 
 // ---------- Cofres ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_vaults(app: AppHandle) -> Res<Vec<SavedVault>> {
     let mut cfg = config::load_app(&app_dir(&app)?);
     cfg.vaults.retain(|v| Path::new(&v.path).is_dir());
     Ok(cfg.vaults)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn forget_vault(app: AppHandle, path: String) -> Res<Vec<SavedVault>> {
     let dir = app_dir(&app)?;
     let mut cfg = config::load_app(&dir);
@@ -177,7 +177,7 @@ fn forget_vault(app: AppHandle, path: String) -> Res<Vec<SavedVault>> {
 }
 
 /// Define o cofre ativo, salva-o na lista de cofres e devolve árvore + configuração.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_vault(app: AppHandle, vault_path: String, state: State<VaultState>) -> Res<OpenedVault> {
     let root = Path::new(&vault_path)
         .canonicalize()
@@ -197,7 +197,7 @@ fn open_vault(app: AppHandle, vault_path: String, state: State<VaultState>) -> R
     Ok(OpenedVault { tree: read_tree_at(&root), config: cfg })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_tree(state: State<VaultState>) -> Res<TreeNode> {
     Ok(read_tree_at(&vault_root(&state)?))
 }
@@ -223,7 +223,7 @@ pub(crate) fn collect_markdown(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Lê todas as notas em paralelo, reconstrói o índice de busca e o de páginas.
-#[tauri::command]
+#[tauri::command(async)]
 fn index_vault(state: State<VaultState>) -> Res<Vec<Note>> {
     let start_time = Instant::now();
     let root = vault_root(&state)?;
@@ -261,7 +261,7 @@ fn index_vault(state: State<VaultState>) -> Res<Vec<Note>> {
 
 /// Busca de texto completo. Sintaxe: termos (E implícito), `OR`, `-excluir`,
 /// `"frase exata"`, `"termo1 termo2"~N` (proximidade), `title:palavra`.
-#[tauri::command]
+#[tauri::command(async)]
 fn search_vault(query: String, limit: Option<usize>, state: State<VaultState>) -> Res<Vec<SearchHit>> {
     vault_root(&state)?;
     state.search.search(&query, limit.unwrap_or(50).min(500))
@@ -269,7 +269,7 @@ fn search_vault(query: String, limit: Option<usize>, state: State<VaultState>) -
 
 // ---------- Arquivos ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_note(file_path: String, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let path = ensure_inside(&root, Path::new(&file_path))?;
@@ -293,7 +293,7 @@ pub(crate) fn forget_note(state: &State<VaultState>, path: &Path) -> Res<()> {
 }
 
 /// Salva a nota e devolve seus metadados atualizados (links/tags para backlinks e grafo).
-#[tauri::command]
+#[tauri::command(async)]
 fn save_note(file_path: String, content: String, state: State<VaultState>) -> Res<Note> {
     let root = vault_root(&state)?;
     let path = ensure_inside(&root, Path::new(&file_path))?;
@@ -315,7 +315,7 @@ fn folder_inside(root: &Path, folder: &str) -> Res<PathBuf> {
 /// Cria uma nota dentro de `folder` e devolve o caminho.
 /// Sem `name`, usa "Sem título.md" (ou "Sem título 1.md", ...).
 /// Com `name` (ex.: alvo de um wikilink), reaproveita a nota se ela já existir.
-#[tauri::command]
+#[tauri::command(async)]
 fn create_note(folder: String, name: Option<String>, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let dir = folder_inside(&root, &folder)?;
@@ -342,7 +342,7 @@ fn create_note(folder: String, name: Option<String>, state: State<VaultState>) -
     Ok(candidate.to_string_lossy().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_folder(parent: String, name: Option<String>, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let dir = folder_inside(&root, &parent)?;
@@ -366,7 +366,7 @@ fn create_folder(parent: String, name: Option<String>, state: State<VaultState>)
 }
 
 /// Renomeia arquivo ou pasta (mesmo diretório). Devolve o novo caminho.
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_path(path: String, new_name: String, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let from = ensure_inside(&root, Path::new(&path))?;
@@ -383,7 +383,10 @@ fn rename_path(path: String, new_name: String, state: State<VaultState>) -> Res<
         return Err("Já existe um item com esse nome.".into());
     }
     fs::rename(&from, &to).map_err(err)?;
-    if is_md(&from) {
+    if to.is_dir() {
+        // Pasta renomeada: as notas de dentro mudam de caminho
+        relocate(&state, &root, &[(from, to.clone())])?;
+    } else if is_md(&from) {
         forget_note(&state, &from)?;
         if is_md(&to) {
             let content = fs::read_to_string(&to).unwrap_or_default();
@@ -393,53 +396,123 @@ fn rename_path(path: String, new_name: String, state: State<VaultState>) -> Res<
     Ok(to.to_string_lossy().to_string())
 }
 
-/// Move para a Lixeira do sistema (recuperável), nunca apaga definitivamente.
-#[tauri::command]
-fn delete_path(path: String, state: State<VaultState>) -> Res<()> {
-    let root = vault_root(&state)?;
-    let target = ensure_inside(&root, Path::new(&path))?;
-    if target == root {
-        return Err("Não é possível excluir a raiz do cofre.".into());
+/// Atualiza busca, páginas e Jev Home depois de mover/renomear itens, tudo de uma vez:
+/// um commit no índice de busca e um rebuild do Jev, em vez de um por nota.
+fn relocate(state: &State<VaultState>, root: &Path, moves: &[(PathBuf, PathBuf)]) -> Res<()> {
+    let mut removed: Vec<PathBuf> = Vec::new();
+    let mut added: Vec<(PathBuf, String)> = Vec::new();
+    for (from, to) in moves {
+        let moved = if to.is_dir() { collect_markdown(to) } else if is_md(to) { vec![to.clone()] } else { Vec::new() };
+        for new in moved {
+            let old = match new.strip_prefix(to) {
+                Ok(rel) if !rel.as_os_str().is_empty() => from.join(rel),
+                _ => from.clone(),
+            };
+            let content = fs::read_to_string(&new).unwrap_or_default();
+            removed.push(old);
+            added.push((new, content));
+        }
     }
-    trash::delete(&target).map_err(err)?;
-    if is_md(&target) {
-        forget_note(&state, &target)?;
+    if removed.is_empty() && added.is_empty() {
+        return Ok(());
+    }
+    state.search.apply(removed.iter().map(PathBuf::as_path), added.iter().map(|(p, c)| (p.as_path(), c.as_str())))?;
+    let parsed: Vec<(Page, String)> = added.into_iter().map(|(p, c)| (pages::parse_page(&p, root, &c), c)).collect();
+    {
+        let mut pages = state.pages.write().map_err(err)?;
+        for old in &removed {
+            pages.remove(&*old.to_string_lossy());
+        }
+        for (page, _) in &parsed {
+            pages.insert(page.path.clone(), page.clone());
+        }
+    }
+    native::jev_relocate(state, root, &removed, &parsed);
+    Ok(())
+}
+
+/// Move para a Lixeira do sistema (recuperável), nunca apaga definitivamente.
+#[tauri::command(async)]
+fn delete_path(path: String, state: State<VaultState>) -> Res<()> {
+    delete_paths(vec![path], state)
+}
+
+/// Exclui vários itens (multisseleção na árvore) de uma vez: uma ida à Lixeira
+/// e um único commit no índice de busca.
+#[tauri::command(async)]
+fn delete_paths(paths: Vec<String>, state: State<VaultState>) -> Res<()> {
+    let root = vault_root(&state)?;
+    let mut targets = Vec::new();
+    for path in &paths {
+        let target = ensure_inside(&root, Path::new(path))?;
+        if target == root {
+            return Err("Não é possível excluir a raiz do cofre.".into());
+        }
+        targets.push(target);
+    }
+    // Notas que somem junto (inclusive as de dentro das pastas)
+    let gone: Vec<PathBuf> = targets
+        .iter()
+        .flat_map(|t| if t.is_dir() { collect_markdown(t) } else if is_md(t) { vec![t.clone()] } else { Vec::new() })
+        .collect();
+    trash::delete_all(&targets).map_err(err)?;
+    if !gone.is_empty() {
+        state.search.apply(gone.iter().map(PathBuf::as_path), std::iter::empty())?;
+        let mut pages = state.pages.write().map_err(err)?;
+        for p in &gone {
+            pages.remove(&*p.to_string_lossy());
+        }
+        drop(pages);
+        native::jev_relocate(&state, &root, &gone, &[]);
     }
     Ok(())
 }
 
-/// Move arquivo ou pasta para outra pasta do cofre (arrastar e soltar / "Mover para…").
-/// Reindexa só as notas afetadas e devolve o novo caminho.
-#[tauri::command]
-fn move_path(path: String, target_folder: String, state: State<VaultState>) -> Res<String> {
+#[derive(Serialize)]
+struct MoveResult {
+    /// Pares [caminho antigo, caminho novo] (exatamente como vieram do frontend)
+    moved: Vec<(String, String)>,
+    errors: Vec<String>,
+}
+
+/// Move arquivos/pastas para outra pasta do cofre (arrastar e soltar / "Mover para…"),
+/// vários de uma vez. Reindexa só as notas afetadas, com um único commit no índice.
+#[tauri::command(async)]
+fn move_paths(paths: Vec<String>, target_folder: String, state: State<VaultState>) -> Res<MoveResult> {
     let root = vault_root(&state)?;
-    let from = ensure_inside(&root, Path::new(&path))?;
-    if from == root {
-        return Err("Não é possível mover a raiz do cofre.".into());
-    }
     let dir = folder_inside(&root, &target_folder)?;
-    if dir.starts_with(&from) {
-        return Err("Não é possível mover uma pasta para dentro dela mesma.".into());
-    }
-    let to = dir.join(from.file_name().ok_or("Caminho inválido.")?);
-    if to == from {
-        return Ok(to.to_string_lossy().to_string());
-    }
-    if to.exists() {
-        return Err(format!("Já existe “{}” na pasta de destino.", to.file_name().unwrap_or_default().to_string_lossy()));
-    }
-    fs::rename(&from, &to).map_err(err)?;
-    let moved = if to.is_dir() { collect_markdown(&to) } else if is_md(&to) { vec![to.clone()] } else { Vec::new() };
-    for new in moved {
-        let old = match new.strip_prefix(&to) {
-            Ok(rel) if !rel.as_os_str().is_empty() => from.join(rel),
-            _ => from.clone(),
+    let mut out = MoveResult { moved: Vec::new(), errors: Vec::new() };
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in paths {
+        let step = || -> Res<Option<(PathBuf, PathBuf)>> {
+            let from = ensure_inside(&root, Path::new(&path))?;
+            if from == root {
+                return Err("Não é possível mover a raiz do cofre.".into());
+            }
+            if dir.starts_with(&from) {
+                return Err("Não é possível mover uma pasta para dentro dela mesma.".into());
+            }
+            let to = dir.join(from.file_name().ok_or("Caminho inválido.")?);
+            if to == from {
+                return Ok(None);
+            }
+            if to.exists() {
+                return Err(format!("Já existe “{}” na pasta de destino.", to.file_name().unwrap_or_default().to_string_lossy()));
+            }
+            fs::rename(&from, &to).map_err(err)?;
+            Ok(Some((from, to)))
         };
-        forget_note(&state, &old)?;
-        let content = fs::read_to_string(&new).unwrap_or_default();
-        reindex_note(&state, &root, &new, &content)?;
+        match step() {
+            Ok(Some((from, to))) => {
+                out.moved.push((path.clone(), to.to_string_lossy().to_string()));
+                done.push((from, to));
+            }
+            Ok(None) => {}
+            Err(e) => out.errors.push(e),
+        }
     }
-    Ok(to.to_string_lossy().to_string())
+    relocate(&state, &root, &done)?;
+    Ok(out)
 }
 
 pub(crate) fn percent_decode(s: &str) -> String {
@@ -484,7 +557,7 @@ fn attachment_dir(root: &Path, note: &Path) -> PathBuf {
 
 /// Salva uma imagem colada no editor. Os bytes vêm crus no corpo da requisição
 /// (sem JSON); `x-note` e `x-ext` vêm nos cabeçalhos. Devolve o nome do arquivo.
-#[tauri::command]
+#[tauri::command(async)]
 fn save_attachment(request: tauri::ipc::Request, state: State<VaultState>) -> Res<String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("Conteúdo da imagem ausente.".into());
@@ -510,7 +583,7 @@ fn save_attachment(request: tauri::ipc::Request, state: State<VaultState>) -> Re
 }
 
 /// Bytes brutos de um arquivo do cofre (ex.: PDF para o pdf.js), sem passar por JSON.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file_bytes(path: String, state: State<VaultState>) -> Res<tauri::ipc::Response> {
     let root = vault_root(&state)?;
     let path = ensure_inside(&root, Path::new(&path))?;
@@ -527,7 +600,7 @@ struct Sheet {
 const MAX_SHEET_ROWS: usize = 5000;
 
 /// Lê planilhas (xlsx, xlsm, xls, xlsb, ods, csv) para visualização.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_spreadsheet(path: String, state: State<VaultState>) -> Res<Vec<Sheet>> {
     use calamine::{open_workbook_auto, Reader};
     let root = vault_root(&state)?;
@@ -570,7 +643,7 @@ fn read_spreadsheet(path: String, state: State<VaultState>) -> Res<Vec<Sheet>> {
 }
 
 /// Converte células copiadas do Excel (separadas por tabulação) em tabela Markdown.
-#[tauri::command]
+#[tauri::command(async)]
 fn tsv_to_markdown(text: String) -> Option<String> {
     let rows: Vec<Vec<String>> = text
         .trim_end_matches(['\r', '\n'])
@@ -604,7 +677,7 @@ fn tsv_to_markdown(text: String) -> Option<String> {
 
 /// Renderiza um bloco de código especial (```rustview ou de um plugin).
 /// `content` é o texto atual do editor, então o resultado reflete edições não salvas.
-#[tauri::command]
+#[tauri::command(async)]
 fn render_block(lang: String, source: String, path: String, content: String, state: State<VaultState>) -> Res<Option<Value>> {
     let root = vault_root(&state)?;
     let started = Instant::now();
@@ -632,12 +705,12 @@ fn render_block(lang: String, source: String, path: String, content: String, sta
 
 // ---------- Plugins ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_plugins(state: State<VaultState>) -> Res<Vec<PluginInfo>> {
     Ok(state.plugins.read().map_err(err)?.infos().to_vec())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn install_plugin(source: String, state: State<VaultState>) -> Res<Vec<PluginInfo>> {
     let root = vault_root(&state)?;
     let src = Path::new(&source);
@@ -653,12 +726,12 @@ fn install_plugin(source: String, state: State<VaultState>) -> Res<Vec<PluginInf
     Ok(host.infos().to_vec())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn run_plugin_command(plugin: String, command: String, note: Value, state: State<VaultState>) -> Res<Value> {
     state.plugins.read().map_err(err)?.command(&plugin, &command, note)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn plugins_dir(state: State<VaultState>) -> Res<String> {
     let dir = plugins::plugins_dir(&vault_root(&state)?);
     fs::create_dir_all(&dir).map_err(err)?;
@@ -667,7 +740,7 @@ fn plugins_dir(state: State<VaultState>) -> Res<String> {
 
 // ---------- Configuração e temas ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_vault_config(config: VaultConfig, state: State<VaultState>) -> Res<Vec<PluginInfo>> {
     let root = vault_root(&state)?;
     let previous = config::load_vault(&root);
@@ -699,7 +772,7 @@ fn css_names(dir: &Path) -> Vec<String> {
     names
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_appearance(state: State<VaultState>) -> Res<Appearance> {
     let root = vault_root(&state)?;
     let silex = root.join(".silex");
@@ -710,7 +783,7 @@ fn list_appearance(state: State<VaultState>) -> Res<Appearance> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_css(kind: String, name: String, state: State<VaultState>) -> Res<String> {
     let root = vault_root(&state)?;
     let folder = match kind.as_str() {
@@ -752,7 +825,8 @@ pub fn run() {
             create_folder,
             rename_path,
             delete_path,
-            move_path,
+            move_paths,
+            delete_paths,
             chat::chat_list,
             chat::chat_get,
             chat::chat_create,

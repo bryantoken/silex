@@ -46,7 +46,7 @@ textarea.sx-input {
 }
 select {
   height: 32px;
-  padding: 0 8px;
+  padding: 0 28px 0 8px;
   border-radius: var(--sx-radius-md);
   border: 1px solid var(--sx-border-strong);
   background: var(--sx-surface-sunken);
@@ -2487,6 +2487,8 @@ select {
   color: var(--sx-text-faint);
 }
 .sx-chat-opts select {
+  padding: 0 22px 0 4px;
+  background-position: right 4px center !important;
   background: transparent;
   border: none;
   color: var(--sx-text-muted);
@@ -2715,4 +2717,7 @@ select {
   border-radius: 50%;
   background: var(--sx-text-strong);
   animation: sx-dot 1s infinite ease-in-out;
+}
+select.sx-input {
+  padding-right: 28px;
 }

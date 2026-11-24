@@ -290,7 +290,7 @@ input.sx-doc-title:focus {
 .sx-settings select {
   min-width: 200px;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 30px 0 10px;
   border-radius: var(--sx-radius-md);
   border: 1px solid var(--sx-border-strong);
   background: var(--sx-surface-sunken);
@@ -1270,6 +1270,22 @@ mark.sx-highlight {
   padding-left: 6px;
   color: var(--sx-text-faint);
 }
+.sx-prop-type {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+  margin-right: -4px;
+  flex-shrink: 0;
+  border-radius: var(--sx-radius-sm);
+  color: inherit;
+  cursor: pointer;
+}
+.sx-prop-type:hover {
+  background: var(--sx-surface-active, var(--sx-surface-hover));
+  color: var(--sx-accent-text);
+}
 .sx-prop-key input {
   flex: 1;
   min-width: 0;
@@ -2073,4 +2089,44 @@ span.sx-wikilink {
 .sx-wikilink em,
 .sx-wikilink .katex {
   color: inherit;
+}
+
+/* ---------- Listas suspensas (<select>, ver lib/selects.ts) ----------
+ * O campo fechado ganha a seta do Silex; a lista aberta é um .sx-menu.is-select.
+ * background-image com !important porque várias regras usam o atalho `background`. */
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23909090' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 9px center !important;
+  background-size: 12px 12px !important;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+select:focus-visible,
+select.is-open {
+  outline: none;
+  border-color: var(--sx-accent);
+}
+select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.sx-menu.is-select {
+  max-width: min(460px, calc(100vw - 8px));
+  max-height: min(380px, calc(100vh - 8px));
+  animation-duration: 70ms;
+}
+.sx-menu.is-select .sx-menu-item {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.sx-menu.is-select .sx-menu-item:disabled {
+  font-size: var(--sx-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }

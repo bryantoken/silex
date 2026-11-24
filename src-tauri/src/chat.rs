@@ -182,17 +182,17 @@ fn store(app: &AppHandle, id: &str, chat: Option<&Chat>) -> Res<()> {
     write_atomic(&d.join("index.json"), &serde_json::to_vec(&index).map_err(err)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_list(app: AppHandle) -> Res<Vec<Summary>> {
     Ok(read_index(&dir(&app)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_get(app: AppHandle, id: String) -> Res<Chat> {
     load(&app, &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_create(app: AppHandle, provider: String, model: String) -> Res<Chat> {
     if !PROVIDERS.contains(&provider.as_str()) {
         return Err("Provedor desconhecido.".into());
@@ -212,7 +212,7 @@ pub fn chat_create(app: AppHandle, provider: String, model: String) -> Res<Chat>
 }
 
 /// Renomeia e/ou troca provedor e modelo (trocar de provedor reinicia a sessão do CLI).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_update(app: AppHandle, id: String, title: Option<String>, provider: Option<String>, model: Option<String>) -> Res<Summary> {
     let mut chat = load(&app, &id)?;
     if let Some(t) = title.map(|t| t.trim().chars().take(120).collect::<String>()).filter(|t| !t.is_empty()) {
@@ -234,13 +234,13 @@ pub fn chat_update(app: AppHandle, id: String, title: Option<String>, provider: 
     Ok((&chat).into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_delete(app: AppHandle, id: String) -> Res<()> {
     chat_stop(id.clone());
     store(&app, &id, None)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_stop(id: String) {
     let run = RUNS.lock().ok().and_then(|r| r.get(&id).cloned());
     if let Some(run) = run {
@@ -252,7 +252,7 @@ pub fn chat_stop(id: String) {
 }
 
 /// Conversas com resposta sendo gerada (o painel pode ter sido fechado e reaberto).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_running() -> Vec<String> {
     RUNS.lock().map(|r| r.keys().cloned().collect()).unwrap_or_default()
 }
@@ -334,7 +334,7 @@ fn settings_of(state: &State<VaultState>) -> Res<(PathBuf, Settings)> {
 }
 
 /// Arquivo colado/solto no chat: bytes crus no corpo, nome no cabeçalho `x-name`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_attach(request: tauri::ipc::Request, state: State<VaultState>) -> Res<Attachment> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("Conteúdo do anexo ausente.".into());
@@ -345,7 +345,7 @@ pub fn chat_attach(request: tauri::ipc::Request, state: State<VaultState>) -> Re
 }
 
 /// Arquivos escolhidos no seletor: copiados para a pasta da IA (os que já estão nela ficam onde estão).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chat_attach_files(paths: Vec<String>, state: State<VaultState>) -> Res<Vec<Attachment>> {
     let (root, settings) = settings_of(&state)?;
     let ai = root.join(settings.ai_folder.trim().trim_matches(['/', '\\']));
@@ -476,7 +476,7 @@ struct Reply {
 /// Envia a mensagem e devolve a resposta completa; texto, raciocínio e passos
 /// chegam antes por `chat-delta`. `note`: nota aberta, anexada como contexto.
 /// `permission` (CLIs): "read", "edit" ou "full".
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn chat_send(
     app: AppHandle,
     id: String,

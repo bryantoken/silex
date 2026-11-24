@@ -17,7 +17,7 @@
   import { blockPreview } from "./blocks";
   import { selectCodeBlock, setTaskStatus } from "./commands";
   import { silexHighlight, silexEditorTheme } from "./theme";
-  import { frontmatterRange } from "./widgets";
+  import { frontmatterRange, refreshProps } from "./widgets";
 
   /** Callbacks do componente montado. As extensões ficam no módulo e sempre leem daqui,
    *  então estados guardados em cache nunca chamam callbacks de um componente destruído. */
@@ -31,6 +31,8 @@
     onexitup?: () => void;
   };
   let bridge: Bridge | null = null;
+  /** Último texto enviado ao App: quando ele volta como prop, não é preciso comparar o documento todo */
+  const emitted = { path: "", text: "" };
 
   const preview = new Compartment();
   const previewExtensions = [inlinePreview, blockPreview];
@@ -173,7 +175,11 @@
       ...searchKeymap,
     ]),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged && bridge) bridge.onchange(bridge.path, u.state.doc.toString());
+      if (!u.docChanged || !bridge) return;
+      const text = u.state.doc.toString();
+      emitted.path = bridge.path;
+      emitted.text = text;
+      bridge.onchange(bridge.path, text);
     }),
     EditorView.domEventHandlers({
       blur: () => {
@@ -238,6 +244,10 @@
     states.clear();
   }
 
+  export function dropEditorState(path: string) {
+    states.delete(path);
+  }
+
   export function renameEditorState(from: string, to: string) {
     const s = states.get(from);
     if (s) {
@@ -250,7 +260,8 @@
     const mode = preview.reconfigure(live ? previewExtensions : []);
     const cached = states.get(p);
     // Se o arquivo mudou por fora (recarregado do disco), descarta o estado antigo
-    if (cached && cached.doc.toString() === text) return cached.update({ effects: mode }).state;
+    if (cached && cached.doc.length === text.length && cached.doc.toString() === text)
+      return cached.update({ effects: [mode, refreshProps.of(null)] }).state;
     return EditorState.create({ doc: text, extensions: [extensions, preview.of(live ? previewExtensions : [])] });
   }
 </script>
@@ -294,6 +305,8 @@
   $effect(() => {
     const text = content;
     untrack(() => {
+      // O próprio texto digitado voltando do App: nada a fazer (evita um toString por tecla)
+      if (path === emitted.path && text === emitted.text) return;
       if (view && path === currentPath && view.state.doc.toString() !== text) {
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
       }

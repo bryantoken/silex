@@ -1,5 +1,5 @@
 import { EditorView, WidgetType } from "@codemirror/view";
-import type { EditorState, Text } from "@codemirror/state";
+import { StateEffect, StateField, type EditorState, type Text } from "@codemirror/state";
 import { parseDocument, isScalar, type Document } from "yaml";
 import { host, type BlockResult, type InlineNode, type ViewNode } from "./context";
 import { renderBlock, renderInline, safeColor } from "../markdown/render";
@@ -1104,30 +1104,101 @@ export function addProperty(view: EditorView, key = "propriedade") {
   focusNewKey = key;
 }
 
-type PropType = "list" | "checkbox" | "number" | "date" | "text";
+export type PropType = "text" | "list" | "number" | "checkbox" | "date" | "datetime";
 
-function propType(key: string, value: unknown): PropType {
+/** Tipos que o usuário pode escolher clicando no ícone da propriedade. */
+export const PROP_TYPES: { type: PropType; label: string; icon: string }[] = [
+  { type: "text", label: "Texto", icon: "type" },
+  { type: "list", label: "Lista (tags)", icon: "tag" },
+  { type: "number", label: "Número", icon: "hash" },
+  { type: "checkbox", label: "Caixa de seleção", icon: "square-check" },
+  { type: "date", label: "Data", icon: "calendar" },
+  { type: "datetime", label: "Data e hora", icon: "clock" },
+];
+const TYPE_ICON = Object.fromEntries(PROP_TYPES.map((t) => [t.type, t.icon])) as Record<PropType, string>;
+const isPropType = (t: unknown): t is PropType => PROP_TYPES.some((p) => p.type === t);
+
+/**
+ * Tipos escolhidos pelo usuário (nome da propriedade → tipo). Valem para o cofre todo,
+ * como no Obsidian; o App liga a configuração do cofre aqui.
+ */
+type TypeStore = { get: () => Record<string, string>; set: (key: string, type: PropType) => void };
+let typeStore: TypeStore = { get: () => ({}), set: () => {} };
+let typesVersion = 0;
+export function connectPropertyTypes(store: TypeStore) {
+  typeStore = store;
+  typesVersion++;
+}
+
+/** Força o painel de propriedades a redesenhar (tipo trocado sem mudar o YAML). */
+export const refreshProps = StateEffect.define<null>();
+export const propsVersionField = StateField.define<number>({
+  create: () => 0,
+  update: (v, tr) => (tr.effects.some((e) => e.is(refreshProps)) ? v + 1 : v),
+});
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+function inferType(key: string, value: unknown): PropType {
   if (Array.isArray(value) || key === "tags" || key === "aliases") return "list";
   if (typeof value === "boolean") return "checkbox";
   if (typeof value === "number") return "number";
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return "date";
+  if (typeof value === "string" && DATE_RE.test(value)) return "date";
+  if (typeof value === "string" && DATETIME_RE.test(value)) return "datetime";
   return "text";
 }
 
-const TYPE_ICON: Record<PropType, string> = {
-  list: "list",
-  checkbox: "check",
-  number: "target",
-  date: "clipboard",
-  text: "pencil",
-};
+function propType(key: string, value: unknown): PropType {
+  const chosen = typeStore.get()[key];
+  return isPropType(chosen) ? chosen : inferType(key, value);
+}
+
+/** Converte o valor ao trocar de tipo. Sem conversão limpa, mantém o valor (não perde dados). */
+function convertValue(value: unknown, to: PropType): unknown {
+  const str = value == null ? "" : String(value).trim();
+  switch (to) {
+    case "text":
+      return Array.isArray(value) ? value.join(", ") : value;
+    case "list":
+      if (Array.isArray(value) || value == null || value === "") return value ?? null;
+      return typeof value === "string" ? value.split(",").map((x) => x.trim()).filter(Boolean) : [value];
+    case "number": {
+      if (typeof value === "number" || value == null) return value;
+      const n = Number(str.replace(",", "."));
+      return str && Number.isFinite(n) ? n : value;
+    }
+    case "checkbox":
+      if (typeof value === "boolean") return value;
+      if (/^(true|sim|yes|x|1)$/i.test(str)) return true;
+      if (value == null || /^(false|não|nao|no|0|)$/i.test(str)) return false;
+      return value;
+    case "date":
+      if (DATE_RE.test(str)) return str;
+      return DATETIME_RE.test(str) ? str.slice(0, 10) : value;
+    case "datetime":
+      if (DATETIME_RE.test(str)) return str.replace(" ", "T").slice(0, 16);
+      return DATE_RE.test(str) ? `${str}T00:00` : value;
+  }
+}
+
+/** Valor como aparece no campo de texto/data/número. */
+function shownValue(value: unknown, type: PropType) {
+  if (value == null) return "";
+  const s = String(value);
+  if (type === "datetime") return DATETIME_RE.test(s) ? s.replace(" ", "T").slice(0, 16) : DATE_RE.test(s) ? `${s}T00:00` : "";
+  if (type === "date") return DATE_RE.test(s) ? s : DATETIME_RE.test(s) ? s.slice(0, 10) : "";
+  return s;
+}
 
 export class PropertiesWidget extends WidgetType {
+  /** Versão dos tipos escolhidos quando o widget foi criado (trocar um tipo redesenha) */
+  readonly types = typesVersion;
   constructor(readonly yaml: string) {
     super();
   }
   eq(other: PropertiesWidget) {
-    return other.yaml === this.yaml;
+    return other.yaml === this.yaml && other.types === this.types;
   }
 
   private commit(view: EditorView, edit: (doc: Document) => void) {
@@ -1164,13 +1235,41 @@ export class PropertiesWidget extends WidgetType {
       row.dataset.type = type;
 
       const keyCell = el("label", "sx-prop-key");
-      keyCell.append(svgIcon(TYPE_ICON[type], 14));
+      // Ícone do tipo: clicar troca o tipo (Texto, Lista, Número, Caixa, Data, Data e hora)
+      const typeBtn = el("button", "sx-prop-type");
+      typeBtn.type = "button";
+      typeBtn.title = `${PROP_TYPES.find((t) => t.type === type)?.label}: clique para trocar o tipo`;
+      typeBtn.append(svgIcon(TYPE_ICON[type], 14));
+      typeBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const r = typeBtn.getBoundingClientRect();
+        popupMenu(
+          PROP_TYPES.map((t) => ({
+            text: t.label,
+            checked: t.type === type,
+            action: () => {
+              if (t.type === type) return;
+              typeStore.set(key, t.type);
+              typesVersion++;
+              const next = convertValue(value, t.type);
+              if (next !== value) this.commit(view, (d) => d.set(key, next == null ? null : d.createNode(next)));
+              view.dispatch({ effects: refreshProps.of(null) });
+            },
+          })),
+          { x: r.left, y: r.bottom + 4, flipY: r.top - 4 },
+        );
+      });
+      keyCell.append(typeBtn);
       const keyInput = el("input");
       keyInput.value = key;
       keyInput.spellcheck = false;
       const renameKey = () => {
         const next = keyInput.value.trim();
         if (!next || next === key) return void (keyInput.value = key);
+        // O tipo escolhido acompanha o novo nome
+        const chosen = typeStore.get()[key];
+        if (isPropType(chosen) && !typeStore.get()[next]) typeStore.set(next, chosen);
         this.commit(view, (d) => {
           const node = d.get(key, true);
           d.delete(key);
@@ -1235,18 +1334,21 @@ export class PropertiesWidget extends WidgetType {
         const box = el("input");
         box.type = "checkbox";
         box.className = "sx-prop-check";
-        box.checked = value === true;
+        box.checked = value === true || (typeof value === "string" && /^(true|sim|yes|x|1)$/i.test(value.trim()));
         box.addEventListener("change", () => this.commit(view, (d) => d.set(key, box.checked)));
         valueCell.append(box);
       } else {
         const input = el("input", "sx-prop-input");
-        input.type = type === "number" ? "number" : type === "date" ? "date" : "text";
-        input.value = value == null ? "" : String(value);
+        input.type = type === "number" ? "number" : type === "date" ? "date" : type === "datetime" ? "datetime-local" : "text";
+        const shown = shownValue(value, type);
+        input.value = shown;
         input.placeholder = "Vazio";
         input.spellcheck = false;
+        // Valor que não é uma data válida aparece como dica (não se perde ao trocar o tipo)
+        if ((type === "date" || type === "datetime") && !shown && value != null && value !== "") input.title = `Valor atual: ${value}`;
         const save = () => {
           const raw = input.value;
-          if (raw === (value == null ? "" : String(value))) return;
+          if (raw === shown) return;
           this.commit(view, (d) => {
             const node = d.get(key, true);
             const next = raw === "" ? null : type === "number" ? Number(raw) : raw;
@@ -1257,7 +1359,7 @@ export class PropertiesWidget extends WidgetType {
         };
         input.addEventListener("keydown", (e) => e.key === "Enter" && input.blur());
         input.addEventListener("blur", save);
-        if (type === "date") input.addEventListener("change", save);
+        if (type === "date" || type === "datetime") input.addEventListener("change", save);
         valueCell.append(input);
       }
 

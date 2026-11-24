@@ -12,6 +12,8 @@
     plugin_settings: Record<string, unknown>;
     /** Atalhos alterados (id do comando → combinação; "" = sem atalho) */
     hotkeys?: Record<string, string>;
+    /** Tipo escolhido de cada propriedade do frontmatter (nome → "text", "list", "date"...) */
+    property_types?: Record<string, string>;
   };
   export type PluginInfo = {
     id: string;

@@ -936,3 +936,24 @@ kbd {
 .sx-update strong {
   color: var(--sx-text-strong);
 }
+
+/* Seleção múltipla na árvore (Ctrl+clique / Shift+clique) */
+.sx-tree-row.is-picked,
+.sx-tree-row.is-picked.is-active {
+  background: var(--sx-selection);
+  color: var(--sx-text-strong);
+}
+.sx-pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 8px 6px;
+  padding: 3px 4px 3px 10px;
+  border-radius: var(--sx-radius-md);
+  background: var(--sx-selection-dim);
+  font-size: var(--sx-text-sm);
+  color: var(--sx-text);
+}
+.sx-pick-bar span {
+  flex: 1;
+}

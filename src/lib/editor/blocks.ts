@@ -17,6 +17,7 @@ import {
   MermaidWidget,
   NoticeWidget,
   PropertiesWidget,
+  propsVersionField,
   TableWidget,
 } from "./widgets";
 import { mathSource } from "../markdown/math";
@@ -119,7 +120,7 @@ function build(state: EditorState) {
   return Decoration.set(decos, true);
 }
 
-const blockDecorations = EditorView.decorations.compute(["doc", revealField], build);
+const blockDecorations = EditorView.decorations.compute(["doc", revealField, propsVersionField], build);
 
 /**
  * Mantém o cursor fora do frontmatter (renderizado como painel de propriedades):
@@ -136,4 +137,4 @@ const frontmatterGuard = EditorState.transactionFilter.of((tr) => {
   return [tr, { selection: { anchor: body }, sequential: true }];
 });
 
-export const blockPreview = [blockDecorations, frontmatterGuard];
+export const blockPreview = [propsVersionField, blockDecorations, frontmatterGuard];

@@ -22,12 +22,14 @@
   import { SvelteSet } from "svelte/reactivity";
   import { onMount, tick } from "svelte";
   import type { EditorView } from "@codemirror/view";
-  import Editor, { resetEditorStates, renameEditorState } from "./lib/editor/Editor.svelte";
+  import Editor, { resetEditorStates, renameEditorState, dropEditorState } from "./lib/editor/Editor.svelte";
+  import { connectPropertyTypes } from "./lib/editor/widgets";
   import type { EditorHost, BlockResult } from "./lib/editor/context";
   import * as ed from "./lib/editor/commands";
   import { TASK_STATUSES } from "./lib/editor/tasks";
   import { CALLOUT_TYPES } from "./lib/editor/callouts";
   import { popupMenu, type MenuEntry } from "./lib/menu";
+  import { installSelects } from "./lib/selects";
   import { applyAppearance } from "./lib/appearance";
   import { fileKind, KIND_ICON } from "./lib/viewers/kinds";
   import Icon from "./lib/components/Icon.svelte";
@@ -99,6 +101,9 @@
     hotkeys: {},
   };
 
+  // Listas suspensas (<select>) do app e dos plugins abrem no tema do Silex
+  installSelects();
+
   // ---------- Estado ----------
 
   let vaults = $state<SavedVault[]>([]);
@@ -113,6 +118,9 @@
   const expanded = new SvelteSet<string>();
   let selectedFolder = $state<string | null>(null);
   let renaming = $state<string | null>(null);
+  /** Itens marcados na árvore com Ctrl+clique / Shift+clique (mover e excluir em lote) */
+  const picked = new SvelteSet<string>();
+  let pickAnchor: string | null = null;
 
   let nextTabId = 1;
   let tabs = $state<Tab[]>([{ id: nextTabId++, history: [], index: -1 }]);
@@ -214,10 +222,20 @@
       localStorage.setItem(`silex.recent:${tree?.path}`, JSON.stringify(recent));
     } catch {}
   }
-  let wordCount = $derived.by(() => {
-    if (!activeDoc) return 0;
-    const body = activeDoc.content.replace(/^---\n[\s\S]*?\n---\n?/, "");
-    return (body.match(/\S+/g) ?? []).length;
+  // Contagem de palavras com atraso: contar o documento inteiro a cada tecla pesava em notas grandes
+  let wordCount = $state(0);
+  let countedPath: string | null = null;
+  $effect(() => {
+    const text = activeDoc?.content ?? "";
+    const path = activePath;
+    const count = () => {
+      countedPath = path;
+      const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "");
+      wordCount = (body.match(/\S+/g) ?? []).length;
+    };
+    if (path !== countedPath) return count();
+    const t = setTimeout(count, 400);
+    return () => clearTimeout(t);
   });
 
   let backlinks = $derived.by(() => {
@@ -332,6 +350,15 @@
     }
   }
 
+  // ---------- Tipos das propriedades ----------
+  // Clicar no ícone de uma propriedade troca o tipo dela (Data, Lista...); vale para o cofre todo
+  connectPropertyTypes({
+    get: () => (config.property_types ?? {}) as Record<string, string>,
+    set: (key, type) => {
+      updateConfig({ ...config, property_types: { ...(config.property_types ?? {}), [key]: type } });
+    },
+  });
+
   // ---------- Avisos ----------
 
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -352,6 +379,8 @@
       tree = opened.tree;
       config = { ...DEFAULT_CONFIG, ...opened.config };
       expanded.clear();
+      picked.clear();
+      pickAnchor = null;
       selectedFolder = null;
       docs = {};
       resetEditorStates();
@@ -443,9 +472,20 @@
     docs[path] = { content, saved: content };
   }
 
-  async function save(path: string) {
+  /** Salvamentos em andamento por nota. Os comandos rodam fora da thread da janela e
+   *  em paralelo, então dois salvamentos da mesma nota entram em fila (o mais novo grava por último). */
+  const saveChains = new Map<string, Promise<void>>();
+
+  function save(path: string): Promise<void> {
     clearTimeout(saveTimers.get(path));
     saveTimers.delete(path);
+    const next = (saveChains.get(path) ?? Promise.resolve()).then(() => saveNow(path));
+    saveChains.set(path, next);
+    next.finally(() => saveChains.get(path) === next && saveChains.delete(path));
+    return next;
+  }
+
+  async function saveNow(path: string) {
     const doc = docs[path];
     if (!doc || doc.content === doc.saved) return;
     const snapshot = doc.content;
@@ -465,7 +505,10 @@
 
   /** Ao voltar para o app, recarrega notas abertas que mudaram no disco (OneDrive, outro editor...). */
   async function reloadChanged() {
+    // Só as notas visíveis em alguma aba (as outras são relidas ao abrir)
+    const open = new Set(tabs.map(pathOf).filter((p): p is string => !!p && !isView(p)));
     for (const [path, doc] of Object.entries(docs)) {
+      if (!open.has(path)) continue;
       if (doc.content !== doc.saved) continue; // não sobrescreve edição pendente
       const disk = await invoke<string>("read_note", { filePath: path }).catch(() => null);
       if (disk !== null && disk !== doc.saved && docs[path] === doc && doc.content === doc.saved) {
@@ -791,24 +834,79 @@
 
   const isUnder = (p: string, root: string) => p === root || p.startsWith(root + "\\") || p.startsWith(root + "/");
   const canMoveTo = (path: string, folder: string) => dirOf(path) !== folder && !isUnder(folder, path);
+  /** Tira da lista os itens que já estão dentro de outra pasta da lista (movê-la já os leva). */
+  const topLevel = (paths: string[]) => paths.filter((p) => !paths.some((q) => q !== p && isUnder(p, q)));
 
-  /** Move arquivo/pasta para outra pasta (arrastar e soltar, "Mover para…"). */
-  async function movePath(path: string, folder: string) {
-    if (!canMoveTo(path, folder)) return;
+  // ----- Árvore atualizada no lugar (sem reler o cofre do disco) -----
+
+  function findFolder(node: FolderNode, path: string): FolderNode | null {
+    if (node.path === path) return node;
+    for (const c of node.children) if (c.kind === "folder" && isUnder(path, c.path)) return findFolder(c, path);
+    return null;
+  }
+
+  function detachNode(node: FolderNode, path: string): TreeNode | null {
+    const i = node.children.findIndex((c) => c.path === path);
+    if (i >= 0) return node.children.splice(i, 1)[0];
+    for (const c of node.children) if (c.kind === "folder" && isUnder(path, c.path)) return detachNode(c, path);
+    return null;
+  }
+
+  function rebase(n: TreeNode, from: string, to: string): TreeNode {
+    const path = to + n.path.slice(from.length);
+    return n.kind === "folder"
+      ? { kind: "folder", name: n.name, path, children: n.children.map((c) => rebase(c, from, to)) }
+      : { kind: "file", name: n.name, path, extension: n.extension };
+  }
+
+  /** Insere mantendo a ordem do Rust: pastas primeiro, depois arquivos, por nome sem caixa. */
+  function insertSorted(folder: FolderNode, node: TreeNode) {
+    const key = node.name.toLowerCase();
+    let i = folder.children.findIndex((c) =>
+      c.kind === node.kind ? c.name.toLowerCase() > key : c.kind === "file",
+    );
+    if (i < 0) i = folder.children.length;
+    folder.children.splice(i, 0, node);
+  }
+
+  /** Move o nó na árvore em memória; devolve false se não achou (aí relê do disco). */
+  function moveInTree(from: string, to: string): boolean {
+    if (!tree) return false;
+    const target = findFolder(tree, dirOf(to));
+    if (!target) return false;
+    const node = detachNode(tree, from);
+    if (!node) return false;
+    insertSorted(target, rebase(node, from, to));
+    return true;
+  }
+
+  /** Move arquivos/pastas para outra pasta (arrastar e soltar, "Mover para…"), vários de uma vez. */
+  async function movePaths(paths: string[], folder: string) {
+    const list = topLevel(paths).filter((p) => canMoveTo(p, folder));
+    if (!list.length || !tree) return;
     try {
       // Grava edições pendentes antes: o salvamento automático escreveria no caminho antigo
-      await Promise.all(Object.keys(docs).filter((k) => isUnder(k, path)).map(save));
-      const next = await invoke<string>("move_path", { path, targetFolder: folder });
-      remapPaths(path, next);
-      const map = (p: string) => (isUnder(p, path) ? next + p.slice(path.length) : p);
-      notes = notes.map((n) =>
-        isUnder(n.absolute_path, path) ? { ...n, absolute_path: map(n.absolute_path), relative_path: relative(map(n.absolute_path)) } : n,
-      );
-      recent = recent.map(map);
-      if (tree && folder !== tree.path) expanded.add(folder);
-      reveal(next);
-      await refreshTree(false);
-      notify(`Movido para ${folder === tree?.path ? tree?.name : relative(folder).replace(/\\/g, "/")}`);
+      await Promise.all(Object.keys(docs).filter((k) => list.some((p) => isUnder(k, p))).map(save));
+      const r = await invoke<{ moved: [string, string][]; errors: string[] }>("move_paths", { paths: list, targetFolder: folder });
+      let treeOk = true;
+      for (const [from, to] of r.moved) {
+        remapPaths(from, to);
+        const map = (p: string) => (isUnder(p, from) ? to + p.slice(from.length) : p);
+        notes = notes.map((n) =>
+          isUnder(n.absolute_path, from) ? { ...n, absolute_path: map(n.absolute_path), relative_path: relative(map(n.absolute_path)) } : n,
+        );
+        recent = recent.map(map);
+        treeOk = moveInTree(from, to) && treeOk;
+      }
+      if (!treeOk) await refreshTree(false);
+      picked.clear();
+      if (r.moved.length > 1) for (const [, to] of r.moved) picked.add(to);
+      if (folder !== tree?.path) expanded.add(folder);
+      if (r.moved.length) reveal(r.moved[0][1]);
+      if (query) runSearch();
+      const where = folder === tree?.path ? tree?.name : relative(folder).replace(/\\/g, "/");
+      if (r.errors.length) notify(r.errors.join("\n"), true);
+      else if (r.moved.length) notify(r.moved.length === 1 ? `Movido para ${where}` : `${r.moved.length} itens movidos para ${where}`);
     } catch (e) {
       fail(e);
     }
@@ -816,23 +914,30 @@
 
   // ---------- Arrastar e soltar na árvore ----------
 
-  let dragPath = $state<string | null>(null);
+  /** Itens sendo arrastados (todos os marcados, se o arrasto começou num deles) */
+  let dragPaths = $state<string[]>([]);
   let dropFolder = $state<string | null>(null);
   let dragOpenTimer: ReturnType<typeof setTimeout> | undefined;
 
   function onTreeDragStart(e: DragEvent, node: TreeNode) {
-    dragPath = node.path;
+    if (picked.size > 1 && picked.has(node.path)) dragPaths = topLevel([...picked]);
+    else {
+      picked.clear();
+      dragPaths = [node.path];
+    }
     const dt = e.dataTransfer!;
     dt.effectAllowed = "copyMove";
-    // Solto no editor, vira link para o arquivo
-    if (node.kind === "file") {
-      const link = linkTargets.byPath.get(node.path) ?? stem(node.name);
-      dt.setData("text/plain", fileKind(node.path) === "markdown" ? `[[${link}]]` : `![[${link}]]`);
-    } else dt.setData("text/plain", node.name);
+    // Solto no editor, vira link para o(s) arquivo(s)
+    const linkOf = (p: string) => {
+      if (!files.some((f) => f.path === p)) return baseName(p);
+      const link = linkTargets.byPath.get(p) ?? stem(p);
+      return fileKind(p) === "markdown" ? `[[${link}]]` : `![[${link}]]`;
+    };
+    dt.setData("text/plain", dragPaths.map(linkOf).join("\n"));
   }
 
   function onTreeDragOver(e: DragEvent, folder: string) {
-    if (!dragPath || !canMoveTo(dragPath, folder)) return;
+    if (!dragPaths.length || !dragPaths.some((p) => canMoveTo(p, folder))) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer!.dropEffect = "move";
@@ -845,21 +950,65 @@
   }
 
   function onTreeDrop(e: DragEvent, folder: string) {
-    const path = dragPath;
-    if (!path) return;
+    const paths = dragPaths;
+    if (!paths.length) return;
     e.preventDefault();
     e.stopPropagation();
     endTreeDrag();
-    movePath(path, folder);
+    movePaths(paths, folder);
   }
 
   function endTreeDrag() {
     clearTimeout(dragOpenTimer);
-    dragPath = null;
+    dragPaths = [];
     dropFolder = null;
   }
 
-  let movePick = $state<string | null>(null);
+  // ----- Seleção múltipla na árvore -----
+
+  /** Caminhos na ordem em que aparecem na árvore (pastas abertas incluídas), para o Shift+clique. */
+  function visiblePaths(): string[] {
+    const out: string[] = [];
+    const walk = (nodes: TreeNode[]) => {
+      for (const n of nodes) {
+        out.push(n.path);
+        if (n.kind === "folder" && expanded.has(n.path)) walk(n.children);
+      }
+    };
+    if (tree) walk(tree.children);
+    return out;
+  }
+
+  /** Clique na árvore: Ctrl marca/desmarca, Shift marca o intervalo, clique simples abre. */
+  function onTreeClick(e: MouseEvent, node: TreeNode) {
+    if (e.shiftKey) {
+      const list = visiblePaths();
+      const from = list.indexOf(pickAnchor ?? activePath ?? node.path);
+      const to = list.indexOf(node.path);
+      picked.clear();
+      if (from < 0) picked.add(node.path);
+      else for (let i = Math.min(from, to); i <= Math.max(from, to); i++) picked.add(list[i]);
+      if (from < 0) pickAnchor = node.path;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      // O primeiro Ctrl+clique leva junto o item que já estava selecionado
+      if (!picked.size) {
+        const first = pickAnchor ?? (activePath && !isView(activePath) ? activePath : null);
+        if (first && first !== node.path && visiblePaths().includes(first)) picked.add(first);
+      }
+      if (picked.has(node.path)) picked.delete(node.path);
+      else picked.add(node.path);
+      pickAnchor = node.path;
+      return;
+    }
+    picked.clear();
+    pickAnchor = node.path;
+    if (node.kind === "folder") toggleFolder(node.path);
+    else openFile(node.path);
+  }
+
+  let movePick = $state<string[] | null>(null);
   /** Destinos de "Mover para…". O caminho fica numa constante local: a paleta
    *  fecha (movePick = null) antes de executar o item escolhido. */
   let moveItems = $derived.by(() => {
@@ -867,12 +1016,12 @@
     const vault = tree;
     if (!from || !vault) return [];
     return [vault.path, ...folders]
-      .filter((f) => canMoveTo(from, f))
+      .filter((f) => from.some((p) => canMoveTo(p, f)))
       .map((f) => ({
         id: f,
         title: f === vault.path ? `${vault.name} (raiz)` : relative(f).replace(/\\/g, "/"),
         icon: "folder",
-        run: () => movePath(from, f),
+        run: () => movePaths(from, f),
       }));
   });
 
@@ -886,26 +1035,34 @@
     confirmState = null;
   }
 
-  async function deletePath(path: string) {
-    const isDir = !files.some((f) => f.path === path);
-    const ok = await confirmIn(`Mover “${baseName(path)}” para a Lixeira?`, "Mover para a Lixeira");
-    if (!ok) return;
+  async function deletePaths(paths: string[]) {
+    const list = topLevel(paths);
+    if (!list.length) return;
+    const text = list.length === 1 ? `Mover “${baseName(list[0])}” para a Lixeira?` : `Mover ${list.length} itens para a Lixeira?`;
+    if (!(await confirmIn(text, "Mover para a Lixeira"))) return;
     try {
-      clearTimeout(saveTimers.get(path));
-      await invoke("delete_path", { path });
-      const gone = (p: string) => p === path || p.startsWith(path + "\\") || p.startsWith(path + "/");
-      for (const t of [...tabs]) if (pathOf(t) && gone(pathOf(t)!)) closeTab(t.id);
+      for (const p of list) clearTimeout(saveTimers.get(p));
+      await invoke("delete_paths", { paths: list });
+      const gone = (p: string) => list.some((root) => isUnder(p, root));
+      for (const t of [...tabs]) if (pathOf(t) && gone(pathOf(t)!)) closeTab(t.id, true);
       for (const t of tabs) {
         const cur = pathOf(t);
         t.history = t.history.filter((p) => !gone(p));
         t.index = cur ? t.history.indexOf(cur) : -1;
       }
       for (const k of Object.keys(docs)) if (gone(k)) delete docs[k];
-      await refreshTree(isDir || fileKind(path) === "markdown");
+      notes = notes.filter((n) => !gone(n.absolute_path));
+      recent = recent.filter((p) => !gone(p));
+      picked.clear();
+      let treeOk = true;
+      if (tree) for (const p of list) treeOk = !!detachNode(tree, p) && treeOk;
+      if (!treeOk) await refreshTree(false);
+      if (query) runSearch();
     } catch (e) {
       fail(e);
     }
   }
+  const deletePath = (path: string) => deletePaths([path]);
 
   /** Resolve [[alvo]] como o Obsidian: caminho relativo ou nome do arquivo, com ou sem .md. */
   function resolveFile(name: string): string | null {
@@ -1080,6 +1237,16 @@
     tabs.splice(i, 1);
     if (tabs.length === 0) tabs.push({ id: nextTabId++, history: [], index: -1 });
     if (id === activeId) activeId = tabs[Math.min(i, tabs.length - 1)].id;
+    if (path && !isView(path)) setTimeout(() => forgetDoc(path), AUTOSAVE_MS + 500);
+  }
+
+  /** Libera da memória a nota que não está mais em nenhuma aba (já salva). */
+  function forgetDoc(path: string) {
+    const doc = docs[path];
+    if (!doc || doc.content !== doc.saved || saveTimers.has(path) || saveChains.has(path)) return;
+    if (tabs.some((t) => t.history.includes(path))) return;
+    delete docs[path];
+    dropEditorState(path);
   }
 
   // Abas fechadas recentemente (Ctrl+Shift+T reabre)
@@ -1306,9 +1473,21 @@
       ]);
       return;
     }
+    // Clique direito num item marcado (com outros): ações em lote
+    if (picked.size > 1 && picked.has(node.path)) {
+      const many = topLevel([...picked]);
+      popupMenu([
+        { text: `Mover ${many.length} itens para…`, action: () => (movePick = many) },
+        { text: `Excluir ${many.length} itens`, action: () => deletePaths(many) },
+        "separator",
+        { text: "Limpar seleção", action: () => picked.clear() },
+      ]);
+      return;
+    }
+    picked.clear();
     const common: MenuEntry[] = [
       { text: "Renomear", action: () => (renaming = node.path) },
-      { text: "Mover para…", action: () => (movePick = node.path) },
+      { text: "Mover para…", action: () => (movePick = [node.path]) },
       { text: "Excluir", action: () => deletePath(node.path) },
       "separator",
       { text: "Mostrar no Explorador", action: () => revealItemInDir(node.path) },
@@ -1388,7 +1567,7 @@
         typing: false,
         run: () => (activeKind === "markdown" ? tick().then(() => (titleInput?.focus(), titleInput?.select())) : activePath && (renaming = activePath)),
       },
-      { id: "note.move", title: "Mover arquivo atual para…", icon: "folder-input", when: !!activeKind, run: () => activePath && (movePick = activePath) },
+      { id: "note.move", title: "Mover arquivo atual para…", icon: "folder-input", when: !!activeKind, run: () => activePath && (movePick = [activePath]) },
       { id: "dock", title: showDock ? "Ocultar barra de formatação" : "Mostrar barra de formatação", icon: "bold", when: hasNote, run: toggleDock },
       { id: "note.delete", title: "Excluir arquivo atual", icon: "trash", when: !!activeKind, run: () => activePath && deletePath(activePath) },
       { id: "note.reveal", title: "Revelar arquivo na árvore", hotkey: "Ctrl+Shift+E", icon: "folder", when: !!activeKind, run: () => {
@@ -1607,6 +1786,21 @@
   // Fase de captura: o atalho vale antes do editor tratar a tecla
   function onKeydown(e: KeyboardEvent) {
     if (palette || settingsOpen || showVaults || movePick || confirmState || exportState || templatePick || promptState) return;
+    // Seleção múltipla na árvore: Esc limpa, Delete exclui os marcados
+    const typingHere = (e.target as HTMLElement)?.matches?.("input, textarea, select, [contenteditable]");
+    if (picked.size && !typingHere && (e.key === "Escape" || e.key === "Delete")) {
+      const inTree = (document.activeElement as HTMLElement | null)?.closest?.(".sx-sidebar");
+      if (e.key === "Escape") {
+        picked.clear();
+        if (inTree) e.preventDefault();
+        return;
+      }
+      if (inTree) {
+        e.preventDefault();
+        deletePaths([...picked]);
+        return;
+      }
+    }
     const combo = comboOf(e);
     const cmd = combo ? bindings.get(combo) : undefined;
     if (!cmd) return;
@@ -1689,10 +1883,11 @@
         class="sx-tree-row"
         class:is-selected={selectedFolder === node.path}
         class:is-drop-target={dropFolder === node.path}
-        class:is-dragging={dragPath === node.path}
+        class:is-dragging={dragPaths.includes(node.path)}
+        class:is-picked={picked.has(node.path)}
         aria-expanded={open}
         draggable="true"
-        onclick={() => toggleFolder(node.path)}
+        onclick={(e) => onTreeClick(e, node)}
         oncontextmenu={(e) => treeMenu(e, node)}
         ondragstart={(e) => onTreeDragStart(e, node)}
         ondragover={(e) => onTreeDragOver(e, node.path)}
@@ -1711,10 +1906,11 @@
         class="sx-tree-row"
         class:is-active={node.path === activePath}
         class:is-muted={kind === "other"}
-        class:is-dragging={dragPath === node.path}
+        class:is-dragging={dragPaths.includes(node.path)}
+        class:is-picked={picked.has(node.path)}
         title={relative(node.path)}
         draggable="true"
-        onclick={(e) => openFile(node.path, e.ctrlKey || e.metaKey)}
+        onclick={(e) => onTreeClick(e, node)}
         onauxclick={(e) => e.button === 1 && openFile(node.path, true)}
         oncontextmenu={(e) => treeMenu(e, node)}
         ondragstart={(e) => onTreeDragStart(e, node)}
@@ -1811,6 +2007,14 @@
               <button class="icon-btn sm" title="Recolher tudo" onclick={() => expanded.clear()}><Icon name="collapse" size={15} /></button>
             </div>
           </div>
+          {#if picked.size > 0}
+            <div class="sx-pick-bar">
+              <span>{picked.size} selecionado{picked.size === 1 ? "" : "s"}</span>
+              <button class="icon-btn sm" title="Mover para…" onclick={() => (movePick = topLevel([...picked]))}><Icon name="folder-input" size={15} /></button>
+              <button class="icon-btn sm" title="Excluir (Delete)" onclick={() => deletePaths([...picked])}><Icon name="trash" size={15} /></button>
+              <button class="icon-btn sm" title="Limpar seleção (Esc)" onclick={() => picked.clear()}><Icon name="x" size={14} stroke={2} /></button>
+            </div>
+          {/if}
           <div
             class="sx-sidebar-body"
             class:is-drop-target={dropFolder === tree.path}
@@ -2146,7 +2350,7 @@
 {#if movePick && tree}
   <Palette
     items={moveItems}
-    placeholder={`Mover “${baseName(movePick)}” para…`}
+    placeholder={movePick.length === 1 ? `Mover “${baseName(movePick[0])}” para…` : `Mover ${movePick.length} itens para…`}
     onclose={() => (movePick = null)}
   />
 {/if}

@@ -38,6 +38,25 @@ export function closeMenu() {
   close?.();
 }
 
+/** Há um menu aberto agora? */
+export function menuOpen() {
+  return close !== null;
+}
+
+/** Opções de posicionamento. `flipY`: sem espaço abaixo, o menu termina nesse y (abre para cima).
+ *  `minWidth`: largura mínima (lista de um select). `focusChecked`: começa no item marcado.
+ *  `typeahead`: letras pulam para o item que começa com elas. */
+export type MenuAt = {
+  x: number;
+  y: number;
+  above?: boolean;
+  flipY?: number;
+  minWidth?: number;
+  focusChecked?: boolean;
+  typeahead?: boolean;
+  className?: string;
+};
+
 // ---------- Área de transferência (itens Recortar/Copiar/Colar/Selecionar tudo) ----------
 
 function editorOf(el: Element | null) {
@@ -94,7 +113,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: s
 }
 
 /** Abre o menu na posição do último clique (ou em `at`; com `above`, o menu termina em `y`). */
-export function popupMenu(entries: MenuEntry[], at: { x: number; y: number; above?: boolean } = pointer): Promise<void> {
+export function popupMenu(entries: MenuEntry[], at: MenuAt = pointer): Promise<void> {
   closeMenu();
   const target = document.activeElement as HTMLElement | null;
   const layer = el("div", "sx-menu-layer");
@@ -129,12 +148,14 @@ export function popupMenu(entries: MenuEntry[], at: { x: number; y: number; abov
     p.child = null;
   };
 
-  const place = (panel: HTMLElement, x: number, y: number, alt?: number, above = false) => {
+  const place = (panel: HTMLElement, x: number, y: number, alt?: number, above = false, flipY?: number) => {
     const w = panel.offsetWidth;
     const h = panel.offsetHeight;
     if (above) y = Math.max(4, y - h);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    // Lista de select sem espaço abaixo do campo: abre para cima, se lá couber mais
+    if (flipY !== undefined && y + h > vh - 4 && flipY - h >= 4) y = flipY - h;
     // Sem espaço à direita, abre para a esquerda (submenu: do outro lado do pai)
     const left = x + w > vw - 4 ? Math.max(4, (alt ?? x) - w) : x;
     const top = y + h > vh - 4 ? Math.max(4, vh - h - 4) : y;
@@ -204,8 +225,17 @@ export function popupMenu(entries: MenuEntry[], at: { x: number; y: number; abov
   };
 
   const root = build(entries, null);
+  if (at.className) root.el.classList.add(...at.className.split(" "));
+  if (at.minWidth) root.el.style.minWidth = `${Math.ceil(at.minWidth)}px`;
   layer.append(root.el);
-  place(root.el, at.x, at.y, undefined, at.above);
+  place(root.el, at.x, at.y, undefined, at.above, at.flipY);
+  if (at.focusChecked) {
+    const i = root.items.findIndex((b) => b.querySelector(".sx-menu-check svg"));
+    if (i >= 0) {
+      setActive(root, i);
+      root.items[i].scrollIntoView({ block: "nearest" });
+    }
+  }
 
   const deepest = () => {
     let p = root;
@@ -216,7 +246,11 @@ export function popupMenu(entries: MenuEntry[], at: { x: number; y: number; abov
     const n = p.items.length;
     for (let k = 1; k <= n; k++) {
       const i = (p.active + dir * k + n * 2) % n;
-      if (!p.items[i].disabled) return setActive(p, i);
+      if (!p.items[i].disabled) {
+        setActive(p, i);
+        p.items[i].scrollIntoView({ block: "nearest" });
+        return;
+      }
     }
   };
 
@@ -254,6 +288,20 @@ export function popupMenu(entries: MenuEntry[], at: { x: number; y: number; abov
       handled();
       const btn = p.items[p.active] as (HTMLButtonElement & { _activate?: () => void }) | undefined;
       if (btn && !btn.disabled) btn._activate?.();
+    } else if (at.typeahead && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // Lista de select: a letra pula para o próximo item que começa com ela
+      handled();
+      const k = e.key.toLocaleLowerCase();
+      const n = p.items.length;
+      for (let s = 1; s <= n; s++) {
+        const i = (p.active + s + n) % n;
+        const label = p.items[i].querySelector(".sx-menu-label")?.textContent?.trim().toLocaleLowerCase() ?? "";
+        if (!p.items[i].disabled && label.startsWith(k)) {
+          setActive(p, i);
+          p.items[i].scrollIntoView({ block: "nearest" });
+          break;
+        }
+      }
     } else if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt") {
       finish();
     }
